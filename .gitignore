@@ -1,0 +1,13 @@
+# secrets
+.env
+.env.local
+*.csv
+rzp-*.csv
+!.env.example
+
+# runtime
+node_modules/
+dist/
+*.sqlite
+*.sqlite-journal
+.DS_Store
