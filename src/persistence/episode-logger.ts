@@ -3,6 +3,13 @@
 // narrative — every attempt, every verdict, rejected or not) and `intents`
 // (the narrower post-policy record used for the P7 idempotency check).
 //
+// [Block 4] decide()/executeApproved() (src/run.ts) log the SAME episode
+// twice for an approved, execution-bound proposal: once at decision time
+// (execResult=null, outcome='pending') and once at execution time
+// (execResult populated). This logger UPSERTs on `entry.intentId` — the
+// second call updates the row the first call created, rather than
+// inserting a duplicate.
+//
 // IMPORTANT for block 7/8 (the eval): each of the 5 strategies replays the
 // SAME 120 scenarios. If the eval runner reuses a scenario-derived orderId
 // verbatim across strategies, idempotencyKey(orderId, attemptNumber) will
@@ -10,10 +17,11 @@
 // "same" scenario. The eval runner must mint a strategy-scoped internal
 // orderId per (scenarioId, strategyName, seed) — same abstract scenario,
 // distinct orderId — so this collision never happens. Not needed yet
-// (block 3 only ever creates one order at a time); flagged here so block
+// (block 3/4 only ever create one order at a time); flagged here so block
 // 7/8 doesn't rediscover it the hard way.
 
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
 import type { EpisodeLogEntry, EpisodeLogger } from "../run.js";
@@ -25,7 +33,7 @@ function intentStatus(entry: EpisodeLogEntry): "pending" | "executed" | "rejecte
   if (entry.verdict.kind === "REJECT") return "rejected";
   if (entry.proposal.type === "ESCALATE") return "escalated";
   if (entry.proposal.type === "MARK_TERMINAL") return "executed"; // the marking itself is the whole action
-  return entry.execResult?.ok ? "executed" : "pending"; // pending: P8-skipped or a genuine Razorpay-side failure
+  return entry.execResult?.ok ? "executed" : "pending"; // pending: not yet executed, P8-skipped, or a genuine Razorpay-side failure
 }
 
 export function makeEpisodeLogger(
@@ -34,9 +42,26 @@ export function makeEpisodeLogger(
   runId: string | null = null,
 ): EpisodeLogger {
   return async (entry: EpisodeLogEntry): Promise<void> => {
-    const episodeId = randomUUID();
     const now = new Date().toISOString();
 
+    const existingIntent = entry.intentId
+      ? db.select({ episodeId: schema.intents.episodeId }).from(schema.intents).where(eq(schema.intents.id, entry.intentId)).get()
+      : undefined;
+
+    if (existingIntent) {
+      // Second call for this intentId (execute-time update): patch both rows.
+      db.update(schema.episodes)
+        .set({ execResult: entry.execResult as unknown as object | null, outcome: entry.outcome })
+        .where(eq(schema.episodes.id, existingIntent.episodeId))
+        .run();
+      db.update(schema.intents)
+        .set({ status: intentStatus(entry), razorpayRefId: entry.execResult?.razorpayRefId ?? null })
+        .where(eq(schema.intents.id, entry.intentId!))
+        .run();
+      return;
+    }
+
+    const episodeId = randomUUID();
     db.insert(schema.episodes)
       .values({
         id: episodeId,
@@ -58,7 +83,7 @@ export function makeEpisodeLogger(
 
     db.insert(schema.intents)
       .values({
-        id: entry.execResult?.intentId ?? randomUUID(),
+        id: entry.intentId ?? randomUUID(),
         episodeId,
         orderId: entry.proposal.orderId,
         attemptNumber: entry.proposal.attemptNumber,

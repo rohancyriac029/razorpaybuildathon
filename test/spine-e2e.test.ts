@@ -89,7 +89,7 @@ describe("end-to-end spine: fake webhook -> decide -> intent -> executor -> row 
 
     const strategy = new StubStrategy();
     const scheduler = new VirtualScheduler(now);
-    const world = new FakeWorld(ctx.failureContext.order as Order);
+    const world = new FakeWorld(db);
     const policy = new RulesPolicyEngine(db, DEFAULT_POLICY_CONFIG);
     const logger = makeEpisodeLogger(db, strategy.name, null);
 
@@ -184,7 +184,7 @@ describe("end-to-end spine: fake webhook -> decide -> intent -> executor -> row 
 
     const strategy = new StubStrategy(); // proposes PAYMENT_LINK unconditionally — the adversarial case
     const scheduler = new VirtualScheduler(now);
-    const world = new FakeWorld(ctx.failureContext.order as Order);
+    const world = new FakeWorld(db);
     const policy = new RulesPolicyEngine(db, DEFAULT_POLICY_CONFIG);
     const logger = makeEpisodeLogger(db, strategy.name, null);
 

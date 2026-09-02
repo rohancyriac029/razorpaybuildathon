@@ -21,8 +21,16 @@ import {
  * via .inject(), instead of only unit-testing the handler functions
  * directly. Production (the `if (import.meta.url === ...)` block below)
  * uses the real file-backed db.
+ *
+ * onPaymentFailed is an optional hook, called after a payment.failed
+ * webhook is classified, with the internal orderId. Defaults to a no-op so
+ * existing classification-only tests are unaffected — production wires it
+ * to the real decide -> schedule pipeline (see the bottom of this file).
  */
-export function buildServer(db: BetterSQLite3Database<typeof schema> = defaultDb) {
+export function buildServer(
+  db: BetterSQLite3Database<typeof schema> = defaultDb,
+  onPaymentFailed: (db: BetterSQLite3Database<typeof schema>, orderId: string) => Promise<void> = async () => {},
+) {
   const app = Fastify({ logger: process.env.VITEST !== "true" });
 
   // Fastify's default JSON parser discards the raw body after parsing. HMAC
@@ -87,9 +95,11 @@ export function buildServer(db: BetterSQLite3Database<typeof schema> = defaultDb
 
     try {
       switch (body.event) {
-        case "payment.failed":
-          processPaymentFailed(db, eventId, body as never, now);
+        case "payment.failed": {
+          const result = processPaymentFailed(db, eventId, body as never, now);
+          await onPaymentFailed(db, result.orderId);
           break;
+        }
         case "order.paid":
           processOrderPaid(db, body as never, now);
           break;
@@ -113,7 +123,36 @@ export function buildServer(db: BetterSQLite3Database<typeof schema> = defaultDb
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const app = buildServer();
+  // Production wiring, constructed once at startup. RulesStrategy stands
+  // in for the Agent until block 6 exists — swapping it there is a
+  // one-line change, which is the entire point of the Strategy port
+  // (spec §3.1.1: same pattern the production LLM-down fallback uses).
+  const Razorpay = (await import("razorpay")).default;
+  const { RazorpayWorld } = await import("./world/razorpay-world.js");
+  const { RealScheduler } = await import("./scheduler/real.js");
+  const { RulesStrategy } = await import("./strategies/rules.js");
+  const { RulesPolicyEngine } = await import("./policy/engine.js");
+  const { policyConfigFromEnv } = await import("./policy/engine.js");
+  const { makeEpisodeLogger } = await import("./persistence/episode-logger.js");
+  const { runDecisionPipeline, registerExecutionDispatcher } = await import(
+    "./orchestration/decision-pipeline.js"
+  );
+
+  const rzp = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID ?? "",
+    key_secret: process.env.RAZORPAY_KEY_SECRET ?? "",
+  });
+  const world = new RazorpayWorld(rzp, defaultDb);
+  const scheduler = new RealScheduler();
+  const strategy = new RulesStrategy();
+  const policyEngine = new RulesPolicyEngine(defaultDb, policyConfigFromEnv());
+  const log = makeEpisodeLogger(defaultDb, strategy.name, null);
+
+  registerExecutionDispatcher(defaultDb, scheduler, world, log);
+
+  const app = buildServer(defaultDb, (db, orderId) =>
+    runDecisionPipeline(db, orderId, strategy, policyEngine, scheduler, log),
+  );
   const port = Number(process.env.PORT ?? 3000);
   app.listen({ port, host: "0.0.0.0" }).then(() => {
     app.log.info(`salvage listening on :${port}`);
