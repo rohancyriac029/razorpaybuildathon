@@ -124,6 +124,15 @@ export async function executeApproved(
   verdict: Awaited<ReturnType<PolicyEngine["decide"]>>,
   contextHash: string,
 ): Promise<ExecResult> {
+  // The effective execution instant is the proposal's own sendAt, not real
+  // wall-clock new Date(). For RealScheduler these are nearly identical
+  // (setTimeout fires close to sendAt). For VirtualScheduler (the eval)
+  // they are NOT — the scheduler fires at a simulated instant that can be
+  // simulated days away from real "now," and SimWorld needs that simulated
+  // instant, not the process's real clock, to evaluate ground truth
+  // correctly.
+  const executionTime = "sendAt" in proposal ? proposal.sendAt : new Date().toISOString();
+
   const intent: Intent = {
     id: intentId,
     episodeId: crypto.randomUUID(),
@@ -133,7 +142,7 @@ export async function executeApproved(
     verdict,
     idempotencyKey: idempotencyKey(proposal.orderId, proposal.attemptNumber),
     status: "pending",
-    createdAt: new Date().toISOString(),
+    createdAt: executionTime,
   };
 
   // P8: re-check live order status immediately pre-execution.
@@ -146,7 +155,7 @@ export async function executeApproved(
       ok: false,
       razorpayRefId: null,
       detail: "P8 recheck: order already paid, execution skipped",
-      executedAt: new Date().toISOString(),
+      executedAt: executionTime,
     };
     outcome = "recovered";
   } else {

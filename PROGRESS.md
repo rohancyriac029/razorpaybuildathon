@@ -240,7 +240,49 @@ Building the Gemini client and running it live surfaced something the earlier re
 
 **Not yet wired:** `CachingLlmClient` exists and is tested at the unit level (implicitly, via its use of the same `llm_cache` table schema) but isn't yet threaded into `AgentStrategy`'s construction anywhere — that wiring, and the `seed` parameter that makes it meaningful, belongs to block 8 (the eval runner), which is the first place multiple seeds of the same scenario actually get run.
 
-## Block 7 — SimWorld, oracle, configs A/B — not started
+## Block 7 — SimWorld, generator, oracle, configs A/B ✅ done (2026-09-02)
+
+Spec §5: "The eval — this is the whole project." The unobservable counterfactual (§5.1), generated and cited (§5.2), firewalled from the agent, with the oracle honestly scoped to what §5.6 demands.
+
+| File | What |
+|---|---|
+| `src/eval/sources.ts` | Real citations, fetched live 2026-09-02: RetentionLens's *State of Involuntary Churn 2026* (recovery rates by approach: no-retry ~0-10%, fixed-interval ~20-40%, industry median ~47.6%, smart+card-updater 70-85%; smart timing lifts recovery ~25% over fixed), Baremetrics (9% MRR loss, 24-48h soft-decline resolution), Recurly (expired cards = single largest cause). **Explicitly separates cited facts from this build's own estimates** (category mix, salary-cycle mechanism) — three targeted fetches came back with no percentage breakdown at all, and that's stated as a finding, not silently patched over with an invented number. |
+| `src/eval/generator-config.ts` | `CONFIG_A` (tuning) and `CONFIG_B` — exactly the three named, justified perturbations spec §5.7 asks for: liquidity days 1-7→25-31 (payroll convention), `AUTH_ABANDONED` share 0.15→0.30 (UPI-heavy cohort), downtime uniform→bursty (issuer incidents cluster) |
+| `src/eval/rng.ts` | `mulberry32` seeded PRNG — same seed always produces the same scenarios *and* the same ground-truth randomness |
+| `src/eval/scenario.ts` | The `Scenario` type: order/failure/customer-history fields a `Strategy` can see, plus hidden ground-truth fields (`liquidityHourIst`, `baseRecoveryProb`, `downtimeClearAtOffsetMs`) it cannot |
+| `src/eval/generator.ts` | `generateScenarios(config, count, seed, anchorTime)` — pulls real `error_reason` values from the taxonomy (block 1) so a generated FUNDS scenario is guaranteed to classify back to FUNDS, not an invented string |
+| `src/eval/ground-truth.ts` | `wouldSucceed(scenario, proposal, at, config)` — spec §5.1's counterfactual, and per §5.6, exactly what the oracle is `argmax` over. Lever-appropriateness × timing-appropriateness × base rate, with a seeded irreducible-random component |
+| `src/eval/scenario-registry.ts` | Shared between `SimWorld` and `OracleStrategy` so both read the *same* scenario data — spec §5.6's claim only holds if there's no risk of two copies drifting apart |
+| `src/world/sim-world.ts` | `SimWorld implements World` — resolves synchronously against ground truth instead of calling live Razorpay, updates `order.status` when `wouldSucceed` says yes |
+| `src/strategies/no-retry.ts`, `fixed-interval.ts`, `oracle.ts` | The remaining 3 of the 5 required strategies (spec §5.3). `FixedIntervalStrategy` is deliberately category-blind, including on TERMINAL — the point is watching the real policy engine catch its mistakes too. `OracleStrategy` tries a small, ground-truth-informed candidate set (not brute-force search), which is what keeps "ceiling" meaningful instead of degenerating into RNG exploitation. |
+
+### The firewall, checked, not just claimed
+
+Spec §5.2 point 2: nothing in `system-prompt.ts` may reference generator parameters. Verified directly — `src/agent/system-prompt.ts` contains no numeric liquidity windows, no category-mix percentages, no config values. The system prompt says only "customers may have predictable liquidity windows; you have `getCustomerHistory`" (paraphrased from spec's own §5.2 wording), and block 6's live test already proved the agent can infer a real pattern from history data alone — that result is now doubly meaningful, since the pattern it inferred came from *this* generator, and the prompt never saw the generator's parameters.
+
+### The oracle's scope, stated plainly (spec §5.6)
+
+The oracle is not an exhaustive search. It tries a small number of ground-truth-snapped candidates per category — the same shape of guess a maximally-informed real strategy would make — and only ever *returns* a candidate it has verified succeeds against `wouldSucceed`. If none of its candidates work, it escalates. Tested directly: `strategies-baselines.test.ts` asserts every PAYMENT_LINK/NUDGE the oracle ever returns is a confirmed win, never a hopeful guess.
+
+### Sanity-checked before building on top of it
+
+Ran the generator at n=500 for both configs before writing tests, not after: category mix tracked config proportions within sampling noise, config B's `AUTH_ABANDONED` shift was visible, `TERMINAL` never succeeded (0/46, 0/50), and FUNDS success rates showed a genuine, substantial timing effect — well-timed proposals succeeded 4-7× more often than badly-timed ones (47.6%/54.5% vs. 11.1%/7.1% across configs A/B). The well-timed figure landing near RetentionLens's cited ~47.6% industry-median recovery rate is a coincidence worth noting, not something tuned to match — the generator was calibrated against the cited band before this check, not after.
+
+### A real bug found while wiring `SimWorld`, and its fix
+
+`generateScenarios` used `crypto.randomUUID()` for `customerId` and `new Date()` (unseeded) for `occurredAt`/history dates — silently breaking the determinism the module's own doc comment promised. Caught immediately by a determinism test (`generateScenarios(config, n, seed)` called twice with the same seed produced different output). Fixed: `customerId` is now derived from `(config.name, seed, index)`; `generateScenarios` takes an explicit `anchorTime` parameter (defaulting to the real clock only for ad hoc/manual use) that every scenario and history date is computed relative to, so any caller that cares about reproducibility supplies one.
+
+**Second, related fix, in `run.ts` this time:** `executeApproved()` was stamping `intent.createdAt`/`execResult.executedAt` with real wall-clock `new Date()`. Harmless in production (`RealScheduler` fires close to real `sendAt` anyway), but wrong for the eval — `VirtualScheduler` fires at a *simulated* instant that can be simulated days from real "now," and `SimWorld` needs that simulated instant, not the process's real clock, to evaluate ground truth correctly. Fixed: the effective execution time is now `proposal.sendAt` itself, not `new Date()`. Caught and fixed before writing `SimWorld`, not after a confusing test failure inside it.
+
+### Verified
+
+`npx tsc --noEmit` clean. **126/128 tests passing** (up from 105; 2 gated behind live-credential env vars, unchanged from before):
+- `test/eval-generator.test.ts` (8) — determinism, category-mix tracking, config B's shift, every generated `error_reason` round-tripping through the real taxonomy classifier, first-time-vs-repeat history shape, TERMINAL never succeeding, and the FUNDS timing-sensitivity effect asserted as a real, substantial ratio (not just "greater than").
+- `test/sim-world.test.ts` (4) — order status flips to `paid` exactly when `wouldSucceed` says so (cross-checked against calling `wouldSucceed` directly, not a hardcoded expectation), `chargeToken` always fails with a stated reason, and — the load-bearing one — execution against a scenario whose ground-truth window is set far in *simulated* future time succeeds correctly, proving `SimWorld` reads `intent.createdAt` and not real wall-clock time.
+- `test/strategies-baselines.test.ts` (7) — `NoRetry` always escalates, `FixedInterval` is category-blind including on TERMINAL, and three oracle-specific tests: markTerminal on TERMINAL, a genuine positive win-rate on FUNDS scenarios, and — most load-bearing — every PAYMENT_LINK/NUDGE the oracle ever returns is independently re-verified against `wouldSucceed` before the test accepts it.
+- `test/sim-pipeline-integration.test.ts` (2, new) — the full chain for real: `decide()` → `VirtualScheduler.scheduleAt()` → `.advance()` → `executeApproved()` → `SimWorld` resolving against ground truth, with Oracle recovering strictly more than NoRetry (which recovers exactly zero, as designed) across 30 real generated scenarios; and `FixedIntervalStrategy`'s blind TERMINAL retry genuinely caught by the real `RulesPolicyEngine` (`P3`), not asserted against a mock.
+
+**Not yet wired:** the eval runner itself (orchestration loop across 120 scenarios × 5 strategies × 3 seeds, metrics computation, the markdown table, the paired bootstrap) is block 8. `CachingLlmClient` (block 6) still isn't threaded into anything — block 8 is where seeds and caching actually matter. `RulesStrategy` (block 5) and `AgentStrategy` (block 6) aren't exercised against `SimWorld` yet in a test — only `NoRetry`/`FixedInterval`/`Oracle` were, since those three are new to this block; block 8's full run will exercise all five together as a matter of course.
 
 ## Block 8 — eval runner — not started
 
