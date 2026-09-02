@@ -1,7 +1,9 @@
 // Spec §6 block 1: Fastify POST /webhooks/razorpay. Verify signature, reject
 // unverified with 401, return 200 fast, process async.
 import Fastify from "fastify";
-import { db } from "./db/client.js";
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import { db as defaultDb } from "./db/client.js";
+import type * as schema from "./db/schema.js";
 import { verifyWebhookSignature } from "./webhooks/verify.js";
 import { isSubscribedEvent, type WebhookPayload } from "./webhooks/events.js";
 import {
@@ -13,10 +15,15 @@ import {
   processDowntime,
 } from "./webhooks/handler.js";
 
-const WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET ?? "";
-
-export function buildServer() {
-  const app = Fastify({ logger: true });
+/**
+ * db is injectable so tests can run the real Fastify request lifecycle
+ * (signature check, dedupe, classification) against an in-memory database
+ * via .inject(), instead of only unit-testing the handler functions
+ * directly. Production (the `if (import.meta.url === ...)` block below)
+ * uses the real file-backed db.
+ */
+export function buildServer(db: BetterSQLite3Database<typeof schema> = defaultDb) {
+  const app = Fastify({ logger: process.env.VITEST !== "true" });
 
   // Fastify's default JSON parser discards the raw body after parsing. HMAC
   // signature verification needs the exact raw bytes Razorpay signed, so we
@@ -43,7 +50,11 @@ export function buildServer() {
     const signature = req.headers["x-razorpay-signature"] as string | undefined;
     const eventId = req.headers["x-razorpay-event-id"] as string | undefined;
 
-    if (!verifyWebhookSignature(rawBody, signature, WEBHOOK_SECRET)) {
+    // Read per-request, not captured at module load: a test (or a secret
+    // rotation) that sets this after the module is first imported must
+    // still take effect.
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET ?? "";
+    if (!verifyWebhookSignature(rawBody, signature, webhookSecret)) {
       req.log.warn("webhook signature verification failed");
       return reply.code(401).send({ error: "invalid signature" });
     }

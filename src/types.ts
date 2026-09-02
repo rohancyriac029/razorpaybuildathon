@@ -62,12 +62,26 @@ export interface RecoveryEconomics {
   amountAtStakePaise: number;
 }
 
+// Shared with EpisodeLogEntry (src/run.ts) — deliberately includes
+// "escalated"/"rejected" so a prior attempt's memory can tell the agent
+// "the policy engine rejected this" or "I escalated last time," which is
+// exactly the kind of signal the multi-attempt reasoning chain needs
+// (spec §3's example: "attempt 2: I was wrong about transient...").
+export type AttemptOutcome =
+  | "recovered"
+  | "failed_again"
+  | "no_response"
+  | "pending"
+  | "escalated"
+  | "rejected"
+  | null;
+
 export interface PriorAttempt {
   attemptNumber: number;
   reasoning: string;
   proposal: Proposal;
   verdict: PolicyVerdict;
-  outcome: "recovered" | "failed_again" | "no_response" | "pending" | null;
+  outcome: AttemptOutcome;
 }
 
 export interface FailureContext {

@@ -86,9 +86,31 @@ Spec §4: deterministic, no LLM, `APPROVE | REJECT | MODIFY` with a rule id and 
 
 **Known gap, honestly flagged:** `run.ts` still doesn't write to the `intents` table (only block 3's end-to-end spine will add that persistence). This means `gatherSnapshot`'s P7 idempotency-dupe check queries a table nothing populates yet in production — it's proven correct against hand-inserted rows in tests, but won't fire for real until block 3 wires up the logger. Not a design flaw: P7 is also enforced independently by the DB's `UNIQUE` constraint on `intents.idempotencyKey` (schema, block 0), so a real duplicate would fail loudly at insert time even before block 3 closes this gap — it just wouldn't get the friendlier "P7 REJECT" verdict path first.
 
-## Block 3 — end-to-end spine with stub strategy — not started
+## Block 3 — end-to-end spine with stub strategy ✅ done (2026-09-02)
 
-## Block 3 — end-to-end spine with stub strategy — not started
+Spec §6 block 3: "Fake webhook → decide → intent → executor → row in DB. First demoable artifact." This is the first point where blocks 0-2 actually connect and run for real.
+
+| File | What |
+|---|---|
+| `src/context/assemble.ts` | `assembleEpisodeContext(db, orderId, now)` — turns an order + point in time into the `EpisodeContext` any `Strategy` needs. Deliberately minimal (matches the cut-list's pre-approved "last-3-payments" degradation, spec §10 item 6); the richer signal extraction is block 6/7's job, not the shared spine's. |
+| `src/economics/constants.ts` | `ATTEMPT_COST_PAISE` / `CONTACT_GOODWILL_COST_PAISE` — placeholder cost estimates for the eval's "net ₹ recovered" metric (§5.4), explicitly flagged as unsourced round numbers to revisit, unlike the taxonomy's cited figures |
+| `src/persistence/episode-logger.ts` | `makeEpisodeLogger(db, strategyName, runId)` — the concrete `EpisodeLogger` for `run()`. Writes every episode (including rejects) to `episodes`, and a matching row to `intents`. **Closes the gap flagged in block 2**: `intents` is now actually populated, so P7's idempotency check has real data to query in production, not just in tests. |
+| `src/scheduler/virtual.ts` | `VirtualScheduler` — in-memory priority queue satisfying the `Scheduler` port; `advance(to)` fires due callbacks in order. `RealScheduler`/BullMQ deferred to block 4 (not needed until production wiring). |
+| `src/strategies/stub.ts` | `StubStrategy` — always proposes a payment link at +2h. Not one of the five real baselines; exists only to prove the spine before Rules/Agent/Oracle exist (blocks 5-7). |
+| `test/helpers/fake-world.ts` | Test-double `World` — records calls, returns canned `ExecResult`s. Not `RazorpayWorld` (block 4) or `SimWorld` (block 7). |
+
+**Closed a gap flagged in block 1's notes:** `buildServer()` now takes an injectable `db` (defaulting to the real client), so tests can run the actual Fastify request lifecycle — real HMAC signature check, real dedupe, real classification — via `.inject()` against an in-memory database, instead of only unit-testing the handler functions directly.
+
+**Real bug found and fixed while wiring this together:** `server.ts` was reading `RAZORPAY_WEBHOOK_SECRET` into a **module-level constant at import time**, not per-request. A test (or a secret rotation) that set the env var after the module was first loaded had no effect — the check silently used a stale/empty value. Moved the read inside the request handler. This would have been a real production footgun (secret rotation requiring a process restart, undocumented) had it shipped as-is; block 3's own test caught it immediately (first attempt: 401 when 200 was expected, on a correctly-signed request).
+
+**Second bug the spine caught in its own tests:** used `new Date()` (real wall-clock time) instead of a fixed test clock for the P3/TERMINAL scenario's `now`. Since `StubStrategy` proposes a `sendAt` of `now + 2h`, this made P4's IST blackout-window check flaky depending on what time of day the test suite happened to run — a real class of bug (time-dependent test flakiness) rather than a logic error. Fixed by using a fixed, documented-safe timestamp, matching the convention already established in `test/policy-rules.test.ts`.
+
+**Verified:** `npx tsc --noEmit` clean. 76/76 tests passing (up from 73) — `test/spine-e2e.test.ts` (3 new):
+1. The full path: signed HTTP request → real route → real classification → `assembleEpisodeContext` → `StubStrategy` → `RulesPolicyEngine` (APPROVE) → `FakeWorld.createPaymentLink` → persisted rows in both `episodes` and `intents`, with the right verdict, execResult, and strategy name on each.
+2. An invalid signature is rejected with 401 at the real HTTP boundary, and nothing is persisted — proving the fail-closed webhook boundary end-to-end, not just at the `verifyWebhookSignature` unit level (block 1).
+3. **The demo's central beat** (spec §5.5, §8), proven for real rather than asserted: a `TERMINAL` failure, `StubStrategy` proposing a retry anyway (the adversarial case), the real `RulesPolicyEngine` catching it with `P3`, `FakeWorld` never touched, and the rejection landing in `intents` with `status: 'rejected'`.
+
+Fastify's logger is now silenced under Vitest (`process.env.VITEST !== "true"`) — the pino JSON lines were cluttering test output with no diagnostic value for a passing suite.
 
 ## Block 4 — live Razorpay wiring — not started (blocked on Subscriptions entitlement for Path A; Path B unblocked)
 

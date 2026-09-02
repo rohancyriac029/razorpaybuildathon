@@ -10,6 +10,7 @@ import type { Strategy } from "./ports/strategy.js";
 import type { World } from "./ports/world.js";
 import type { PolicyEngine } from "./ports/policy-engine.js";
 import type {
+  AttemptOutcome,
   EpisodeContext,
   ExecResult,
   Intent,
@@ -24,7 +25,7 @@ export interface EpisodeLogEntry {
   proposal: Proposal;
   verdict: Awaited<ReturnType<PolicyEngine["decide"]>>;
   execResult: ExecResult | null;
-  outcome: "recovered" | "failed_again" | "no_response" | "pending" | "escalated" | "rejected" | null;
+  outcome: AttemptOutcome;
 }
 
 export type EpisodeLogger = (entry: EpisodeLogEntry) => Promise<void>;
