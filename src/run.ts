@@ -56,7 +56,11 @@ export async function run(
   // the Agent strategy itself falls back to Rules.propose() first (§3.1.1).
 
   // GATE — every strategy, no exceptions (§4.4).
-  const verdict = await policyEngine.decide(proposal, scheduler.now());
+  const verdict = await policyEngine.decide(proposal, {
+    order: ctx.failureContext.order,
+    failure: ctx.failureContext.failure,
+    now: scheduler.now(),
+  });
 
   const effectiveProposal =
     verdict.kind === "MODIFY" && verdict.modifiedProposal
@@ -102,7 +106,6 @@ export async function run(
       outcome = "recovered";
     } else {
       execResult = await executeByType(effectiveProposal, intent, world);
-      await policyEngine.recordExecution(effectiveProposal, scheduler.now());
       outcome = "pending"; // OBSERVE step updates this from the outcome webhook
     }
   }

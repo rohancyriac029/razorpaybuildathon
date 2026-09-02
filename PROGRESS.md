@@ -56,7 +56,37 @@ Spec §6 block 1: normalise every failure, verify signatures, dedupe, fail close
 
 **Not yet wired:** `payment.downtime.*` events are received and stored as raw rows but not consumed (`processDowntime` is a no-op beyond the dedupe insert) — matches spec §1.4 / cut-list item 7 ("consume it or drop it, don't reinvent `getMethodHealth`"). Decision on whether to consume it deferred to whenever policy/agent blocks need it, or dropped for good with a README note.
 
-## Block 2 — policy engine P1–P14 + tests — not started
+## Block 2 — policy engine P1–P14 + tests ✅ done (2026-09-02)
+
+Spec §4: deterministic, no LLM, `APPROVE | REJECT | MODIFY` with a rule id and reason, every verdict logged. Explicitly "cannot cut" / "your interview answer" per spec §10.
+
+| File | What |
+|---|---|
+| `src/policy/rules.ts` | Pure function `evaluateProposal(proposal, ctx, snapshot, config) -> PolicyVerdict`. All 14 rules, zero DB access — testable with hand-built inputs only. |
+| `src/policy/snapshot.ts` | The `PolicySnapshot` data shape rules.ts needs (counts, timestamps, flags) — decouples rule logic from how that state is gathered |
+| `src/policy/gather-snapshot.ts` | DB-backed: derives the snapshot by querying `episodes`/`orders`/`intents` directly — **no separate counter state**, so there's nothing that can drift from the audit log a reviewer would replay |
+| `src/policy/engine.ts` | `RulesPolicyEngine implements PolicyEngine` — wires rules.ts + gather-snapshot.ts behind the port; `policyConfigFromEnv()` reads `KILL_SWITCH`, `GLOBAL_EXEC_PER_HOUR`, `GLOBAL_CONTACTS_PER_DAY`, `STALENESS_CUTOFF_DAYS`, `VALUE_CEILING_PAISE` (added to `.env`/`.env.example`) |
+| `src/util/ist.ts` | IST is UTC+5:30, no DST — computed directly. `isIstBlackoutHour` (P4), `istMidnightUtc` (P10's daily contact window) |
+
+**Port change from block 0:** `PolicyEngine.decide()` now takes `{order, failure, now}`, not just a bare `Date` — P3 needs `failure.category`, P11 needs `failure.occurredAt`. Also **dropped `recordExecution()`** from the port entirely: since `decide()` re-derives all counters from `episodes` on every call, there's no separate state to record. `run.ts` updated to match (one fewer call, one fewer thing that could get out of sync).
+
+**Rule-by-rule scope decisions** (each documented inline in `rules.ts`, not just here):
+
+- **Evaluation order is fixed and tested**: P7 (idempotency) → P13 (kill switch) → P3 (TERMINAL) → P1 (max attempts) → P2 (min gap) → P11 (staleness) → P4 (blackout) → P5 (max contacts) → P12 (live link) → P6/P14 (amount) → P9 (value ceiling) → P10 (global caps) → P0 (approve). Tests assert precedence directly (e.g. P3 wins over P1 when both would fire) — this is exactly the kind of thing an interviewer probes, so it's provable, not asserted.
+- **`MARK_TERMINAL`/`ESCALATE` bypass every rule except P7.** Per spec's own hard rules ("escalating is always safe"; markTerminal is the *required* response to TERMINAL) — blocking either would break triage during an incident for no safety benefit. Tested explicitly, including "approves escalate even under kill switch."
+- **P9 (value ceiling) implemented as MODIFY, not REJECT** — spec says "above → escalate," so an over-ceiling proposal is rewritten into an `ESCALATE` proposal, which `run.ts` (block 0) already treats as a real non-recovery outcome. No `run.ts` changes needed; the port design from block 0 absorbed this for free.
+- **P6/P14 amount check is genuinely unreachable through legitimate code**, and that's the point (spec §4.1.1: "P14 is the only rule that is not primarily a policy-engine check"). `Proposal` types carry no `amount` field at all — proven with a `@ts-expect-error` compile-time test, not just a runtime one. The P6/P14 runtime check exists purely as defense-in-depth against a future schema regression, and is exercised in tests via an unsafe cast that simulates exactly that.
+- **"Executed" (for P1/P2/P5 budget purposes) means `execResult.ok === true`.** A P8 recheck that skipped execution because the order was already paid, or a genuine Razorpay API failure, burns neither a lifetime attempt nor a contact — nothing reached the customer or the card either way. Documented and tested (`gatherSnapshot` test: "counts only genuinely executed... not P8-skipped or failed ones").
+- **P12 scoped to `PAYMENT_LINK` only, not `NUDGE`.** A nudge references a template, not necessarily a freshly-minted link; conflating the two would need a link-id relationship this build doesn't model. Documented as a scope decision, not an oversight.
+- **P4 keys off the proposal's `sendAt`, not decision time** — a customer-facing action is rejected if it would *land* in the blackout window, even if decided at 3pm. `TOKEN_RETRY` is exempt (silent, no customer contact).
+
+**Verified:** `npx tsc --noEmit` clean. 73/73 tests passing (up from 23):
+- `test/policy-rules.test.ts` (42) — every rule's reject/approve boundary, the MARK_TERMINAL/ESCALATE bypass, and precedence ordering, all against hand-built snapshots (no DB).
+- `test/policy-engine-integration.test.ts` (8) — `gatherSnapshot` against a real (in-memory, schema-migrated) DB: executed-vs-skipped counting, `lastExecutionAt`, `liveUnpaidLinkExists` flipping on `order.status`, cross-order global counting, and the full `RulesPolicyEngine` through the port, including a from-scratch P1 rejection built from 3 real DB rows.
+
+**Known gap, honestly flagged:** `run.ts` still doesn't write to the `intents` table (only block 3's end-to-end spine will add that persistence). This means `gatherSnapshot`'s P7 idempotency-dupe check queries a table nothing populates yet in production — it's proven correct against hand-inserted rows in tests, but won't fire for real until block 3 wires up the logger. Not a design flaw: P7 is also enforced independently by the DB's `UNIQUE` constraint on `intents.idempotencyKey` (schema, block 0), so a real duplicate would fail loudly at insert time even before block 3 closes this gap — it just wouldn't get the friendlier "P7 REJECT" verdict path first.
+
+## Block 3 — end-to-end spine with stub strategy — not started
 
 ## Block 3 — end-to-end spine with stub strategy — not started
 
