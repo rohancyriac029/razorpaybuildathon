@@ -11,6 +11,29 @@ export const customers = sqliteTable("customers", {
   createdAt: text("created_at").notNull(),
 });
 
+// Separate from `orders`: a subscription is a longer-lived Razorpay entity
+// that creates many charge attempts (orders) over its life. subscription.pending
+// and subscription.halted webhooks carry a subscription id, not an order id
+// (confirmed against razorpay.com/docs/webhooks/subscriptions/, 2026-09-02),
+// so lifecycle state lives here, separate from the taxonomy-classified
+// `failures` table. See src/webhooks/handler.ts for why these are decoupled.
+export const subscriptions = sqliteTable("subscriptions", {
+  id: text("id").primaryKey(),
+  razorpaySubscriptionId: text("razorpay_subscription_id").notNull().unique(),
+  customerId: text("customer_id")
+    .notNull()
+    .references(() => customers.id),
+  status: text("status", {
+    enum: ["active", "pending", "halted", "cancelled"],
+  })
+    .notNull()
+    .default("active"),
+  authAttempts: integer("auth_attempts").notNull().default(0),
+  planAmount: integer("plan_amount").notNull(), // paise
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const orders = sqliteTable("orders", {
   id: text("id").primaryKey(),
   razorpayOrderId: text("razorpay_order_id").notNull().unique(),

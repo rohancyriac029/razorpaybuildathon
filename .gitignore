@@ -11,4 +11,3 @@ dist/
 *.sqlite
 *.sqlite-journal
 .DS_Store
-drizzle/
