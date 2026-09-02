@@ -114,7 +114,20 @@ Fastify's logger is now silenced under Vitest (`process.env.VITEST !== "true"`) 
 
 ## Block 4 — live Razorpay wiring — not started (blocked on Subscriptions entitlement for Path A; Path B unblocked)
 
-## Block 5 — Rules strategy — not started
+## Block 5 — Rules strategy ✅ done (2026-09-02)
+
+Spec §5.3: "~150 lines... deterministic, auditable, free to run, never hallucinates." The real competitor in the eval (non-negotiable) and, per §3.1.1, the Agent's production fallback once block 6 exists.
+
+| File | What |
+|---|---|
+| `src/strategies/rules.ts` | `RulesStrategy implements Strategy` — the exact branching from spec §5.3: `TERMINAL→stop`, `INSTRUMENT→link+2h`, `AUTH_ABANDONED→nudge, next 10:00-20:00 IST slot`, `TRANSIENT→+90m if downtime cleared else +6h`, `FUNDS→+48h, or +24h if IST day-of-month ≤7` |
+| `src/policy/downtime-checker.ts` | Injectable `DowntimeChecker` interface + `UnknownDowntimeChecker` default. **Defaults pessimistic** (treats unknown as "still degraded," the longer +6h wait) rather than optimistic — matches the system's fail-closed posture elsewhere, and is honest about block 1's decision not to wire real `payment.downtime.*` consumption yet (no per-failure method tracking in this schema to key off of). Swappable later without touching the strategy's branching logic. |
+| `src/messaging/templates.ts` | Minimal template catalogue (3 templates: `payment_retry_v2`, `auth_incomplete_v1`, `instrument_update_v1`) satisfying spec §4.5's "select a template, don't write copy freehand." **Deliberately does not yet include the P14 "trap" template** (`retry_with_offer`, spec §4.1.1/§5.5.1) — that belongs in block 6 alongside the Zod tool schema and runtime validator that actually enforce P14 against it; building it disconnected from that enforcement layer now would be untested, unlinked infrastructure. |
+| `src/util/ist.ts` (extended) | Added `istDayOfMonth`, `nextIstClockTime(from, hour, minute)` — the salary-cycle and 10:00-20:00-slot logic block 5 needed |
+
+**Verified:** `npx tsc --noEmit` clean. 90/90 tests passing (up from 76) — `test/strategies-rules.test.ts` (14 new): every category's branch, IST window boundaries in both directions (inside/before/after 10:00-20:00), the downtime-cleared/not-cleared/default-pessimistic split, the day-of-month boundary at exactly 7 vs 8, and a determinism check (same input → identical output, proving there's no hidden state).
+
+**Not yet wired:** `RulesStrategy` isn't referenced anywhere outside its own tests yet — the production fallback wiring (§3.1.1: malformed/timeout/down → `Rules.propose()` instead of a dead-end escalate) is block 6's job, once the Agent strategy that needs a fallback actually exists.
 
 ## Block 6 — Agent strategy + system prompt — not started (needs `ANTHROPIC_API_KEY`, not yet in `.env`)
 
