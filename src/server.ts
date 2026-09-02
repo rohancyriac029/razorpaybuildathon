@@ -123,14 +123,16 @@ export function buildServer(
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  // Production wiring, constructed once at startup. RulesStrategy stands
-  // in for the Agent until block 6 exists — swapping it there is a
-  // one-line change, which is the entire point of the Strategy port
-  // (spec §3.1.1: same pattern the production LLM-down fallback uses).
+  // Production wiring, constructed once at startup. AgentStrategy is
+  // primary; RulesStrategy is both the eval's ablation baseline (block 5)
+  // and, unchanged, this strategy's fallback on a malformed/timed-out/down
+  // LLM (spec §3.1.1) — same instance, dual use, no separate code path.
   const Razorpay = (await import("razorpay")).default;
   const { RazorpayWorld } = await import("./world/razorpay-world.js");
   const { RealScheduler } = await import("./scheduler/real.js");
   const { RulesStrategy } = await import("./strategies/rules.js");
+  const { AgentStrategy } = await import("./agent/agent-strategy.js");
+  const { llmClientFromEnv } = await import("./llm/factory.js");
   const { RulesPolicyEngine } = await import("./policy/engine.js");
   const { policyConfigFromEnv } = await import("./policy/engine.js");
   const { makeEpisodeLogger } = await import("./persistence/episode-logger.js");
@@ -144,7 +146,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   });
   const world = new RazorpayWorld(rzp, defaultDb);
   const scheduler = new RealScheduler();
-  const strategy = new RulesStrategy();
+  const rulesFallback = new RulesStrategy();
+  const strategy = new AgentStrategy(llmClientFromEnv(), rulesFallback);
   const policyEngine = new RulesPolicyEngine(defaultDb, policyConfigFromEnv());
   const log = makeEpisodeLogger(defaultDb, strategy.name, null);
 

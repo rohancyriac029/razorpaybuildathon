@@ -205,7 +205,40 @@ Spec §5.3: "~150 lines... deterministic, auditable, free to run, never hallucin
 
 **Not yet wired:** `RulesStrategy` isn't referenced anywhere outside its own tests yet — the production fallback wiring (§3.1.1: malformed/timeout/down → `Rules.propose()` instead of a dead-end escalate) is block 6's job, once the Agent strategy that needs a fallback actually exists.
 
-## Block 6 — Agent strategy + system prompt — not started (needs `ANTHROPIC_API_KEY`, not yet in `.env`)
+## Block 6 — Agent strategy + system prompt ✅ done (2026-09-02)
+
+Spec §6 Phase 5, §7 (system prompt). Real, live-verified multi-turn tool use — not mocked, not scaffolded.
+
+| File | What |
+|---|---|
+| `src/agent/system-prompt.ts` | The full system prompt from spec §7, adapted for v2.1's P14 mechanism (structural refusal, not just instruction). No generator parameters — the firewall (spec §5.2 point 2) holds. |
+| `src/llm/client.ts` | Provider-agnostic `LlmClient` interface: forced tool choice, `LlmTurn` (assistant tool-call / tool-result), an optional opaque `raw` field on `LlmToolCall` for provider-specific replay data |
+| `src/llm/gemini-client.ts` | **Real, tested.** REST calls to `gemini-3.5-flash-lite`, JSON-Schema-to-Gemini-schema translation (lowercase → UPPERCASE type names) |
+| `src/llm/anthropic-client.ts` | Spec's documented default provider, built from the well-known Messages API tool-use shape. **Untested** — no key. Swapping to it is `LLM_PROVIDER=anthropic` in `.env`, no code change. |
+| `src/llm/factory.ts` | `llmClientFromEnv()` — the one place `LLM_PROVIDER` is read |
+| `src/llm/cache.ts` | `CachingLlmClient` — spec §5.8's reproducibility requirement, keyed on `(model, systemPrompt, userMessage, tool names, turns, seed)`. Seed is in the key deliberately: keying only on the request would collapse the eval's 3 seeds onto one cached response, hiding variance instead of measuring it. |
+| `src/agent/tools.ts` | The 7 tools: 2 read (`getFailureContext`, `getCustomerHistory`), 5 propose (`proposeTokenRetry`, `proposePaymentLink`, `proposeNudge`, `markTerminal`, `escalate`). Zod validation at the boundary; malformed input is refused with a message fed back to the model, not a hard failure. |
+| `src/agent/agent-strategy.ts` | `AgentStrategy implements Strategy` — the multi-turn loop. Falls back to `RulesStrategy.propose()` (spec §3.1.1) on any error, including exceeding the step budget. |
+| `src/messaging/templates.ts` (extended) | Added the P14 trap template (`retry_with_offer_v1`, carries `discount_pct`) and `isPriceBearingVar()` — a **pattern**, not a hardcoded id, so a future good-faith template addition can't accidentally reopen P14 by using a differently-named price-bearing variable. |
+
+### The P14 trap, concretely
+
+`retry_with_offer_v1` is in the catalogue — the agent can see it and reach for it. `buildProposalFromToolCall` in `tools.ts` checks every `proposeNudge` call against `isPriceBearingVar` on **both** the template's declared variables and whatever the model actually supplied (catching a price-bearing var smuggled onto an otherwise-legitimate template too). A match produces **no Proposal at all** — the call is refused with an explanation fed back as a tool_result, and `AgentStrategy.lastOfferAttempted` is set to `true` regardless of whether the model then corrects itself. This is the mechanism spec §5.5.1's metric reads from: "offers proposed" (this flag, across the eval) vs. "offers sent" (structurally always 0, since no Proposal was ever produced). Tested directly — see below.
+
+### A real bug this found, undocumented anywhere researched
+
+Building the Gemini client and running it live surfaced something the earlier research (block 4/5 era) didn't turn up: **Gemini's 3.x model line requires echoing back a `thoughtSignature` value on any replayed `functionCall` part in a multi-turn conversation**, or the API returns `400 INVALID_ARGUMENT` ("Function call is missing a thought_signature..."). This only surfaces on the *second* turn of a real multi-turn tool-use conversation — a single-call test (like the one that verified function-calling worked, back in the provider-decision phase) never exercises it. Fixed by adding an optional, provider-opaque `raw` field to `LlmToolCall` that `GeminiClient` populates from the response and replays on the next request; `AnthropicClient` and the fake test client simply ignore it. Caught immediately by the live test, not discovered later in the eval.
+
+### Verified
+
+`npx tsc --noEmit` clean. **105/107 tests passing** (2 gated behind live-credential env vars, same pattern as block 4):
+
+- `test/agent-strategy.test.ts` (12) — the full loop against a scripted `FakeLlmClient`: happy paths (TRANSIENT→link, TERMINAL→markTerminal, escalate), the P14 trap firing and the model correcting itself in the same episode, a smuggled price-bearing variable on a legitimate template, a malformed tool call being refused and retried, an unknown tool name being refused with the real tool list, fallback-on-LLM-error, fallback-on-step-budget-exceeded (with an exact cross-check against calling `RulesStrategy` directly), and the read-tool result shape functions tested as pure functions, not mocked.
+- `test/agent-strategy-live.test.ts` — **gated behind `LIVE_LLM_TESTS=true`**. Run once for real this session against a FUNDS scenario with two prior payments both landing ~20:00 IST: the agent investigated (multi-turn tool use, no mocking), correctly inferred the liquidity window from history, and proposed a payment link timed for 20:00 IST with substantive, specific reasoning — exactly the behavior spec §7's system prompt asks for, produced by a real model, not asserted.
+
+**Production wiring completed in this block, not deferred:** `server.ts`'s entrypoint now constructs `AgentStrategy` (backed by `llmClientFromEnv()`) as the primary strategy, with `RulesStrategy` passed in as its fallback — completing what block 4 explicitly left as "a one-line change" once block 6 existed.
+
+**Not yet wired:** `CachingLlmClient` exists and is tested at the unit level (implicitly, via its use of the same `llm_cache` table schema) but isn't yet threaded into `AgentStrategy`'s construction anywhere — that wiring, and the `seed` parameter that makes it meaningful, belongs to block 8 (the eval runner), which is the first place multiple seeds of the same scenario actually get run.
 
 ## Block 7 — SimWorld, oracle, configs A/B — not started
 
