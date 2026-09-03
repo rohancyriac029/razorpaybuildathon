@@ -157,6 +157,17 @@ export function processPaymentFailed(
     errorSource: p.error_source,
   });
 
+  // The failure's OWN timestamp (when it actually happened), not `now` (when
+  // we happened to process it). These are near-identical for a real live
+  // webhook, which is exactly why this was invisible until block 10's
+  // backfill script — which deliberately backdates payloads — surfaced it:
+  // every failure was silently recorded as happening "now," making P11's
+  // staleness check a no-op against backfilled data. body.created_at is the
+  // webhook envelope's own Unix-seconds timestamp, always present.
+  const occurredAt = Number.isFinite(body.created_at)
+    ? new Date(body.created_at * 1000).toISOString()
+    : now;
+
   const failureId = randomUUID();
   db.insert(schema.failures)
     .values({
@@ -170,7 +181,7 @@ export function processPaymentFailed(
       errorReason: p.error_reason,
       category: result.category,
       attemptNumber,
-      occurredAt: now,
+      occurredAt,
     })
     .run();
 

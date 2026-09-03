@@ -353,7 +353,41 @@ Block 8 shipped `EpisodeRunResult` as an in-memory-only return value — the `ev
 
 **Known limitation, stated rather than hidden:** `latestRunReport`'s TERMINAL-scenario detection is inferred post-hoc from `eval_runs` rows (a scenario is inferred TERMINAL if any strategy's row shows a nonzero `terminalRetriesProposed`/`Executed`), because the full `Scenario` — including its category — isn't persisted to `eval_runs` by design (it would mean storing the ground-truth answer key alongside the results, in tension with spec §5.2's firewall spirit). This undercounts TERMINAL scenarios where every strategy correctly avoided proposing a retry at all. The HTML page's scoreboard is a convenience view; `npm run eval`'s own stdout — computed from live `Scenario` objects with real categories — remains the authoritative table for the README.
 
-## Block 10 — backfill script + kill-switch demo — not started
+## Block 10 — backfill script + kill-switch demo ✅ done (2026-09-03)
+
+Spec §4.2's whole argument for P10/P11 existing at all: "Run [a backfill] with the wrong dates, or run it twice, and you ingest thousands of stale failures... Only a system-wide cap catches it. This is your kill-switch demo scenario." Either this script exists and actually gets caught by P10/P11/P13, or that's fiction. It exists, and all three are proven by real runs, not just unit tests.
+
+| File | What |
+|---|---|
+| `src/backfill/ingest.ts` | `ingestBackfill(db, records, strategy, policy, world, log, now)` — the testable core: for each record, the SAME `dedupeAndStore` → `processPaymentFailed` → `assembleEpisodeContext` → `decide()` pipeline a real webhook goes through, then `executeApproved()` for anything approved and execution-bound (a backfill is "catch up now," not "schedule for later" — it doesn't wait for `sendAt`). Returns `BackfillStats` with a per-rule rejection breakdown. |
+| `scripts/backfill.ts` | The CLI shell. `--simulate N [--stale-days D]` (synthetic records — the test account is fresh and has no real failure history to pull) or `--from/--to` (real `rzp.payments.all()`, filtered to `status === "failed"`). `KILL_SWITCH=true` env var demos P13. Simulate mode uses an inline `SimulatedWorld` (reports `ok:true` without hitting the network, since simulated order ids don't exist in Razorpay); real mode uses the actual `RazorpayWorld`. |
+| `test/backfill-ingest.test.ts` | 7 tests: P11 catches all 20/20 stale (240-day) failures and none of 5 fresh ones; P10 catches exactly `12 - 5 = 7` rejections with the cap set to 5 (12 fresh, distinct-order records — proving P1 alone does nothing here, every order is on attempt 1); with the cap effectively disabled all 50 pass, proving P1's blindness to this failure shape is real, not assumed; running the same 10 records twice dedupes to 0 new ingestion the second time; P13 rejects all 8 outright; a real order+failure row is actually persisted per record. |
+
+### Three layered bugs, found in the order P10/P11 actually depend on them
+
+Getting the P10/P11 test suite green required fixing three separate, stacked timestamp bugs — each one hid the next until the previous was fixed:
+
+**1. `processPaymentFailed` stamped every failure's `occurredAt` with processing time (`now`), not the webhook's own `created_at`.** Harmless for a real live webhook (the two times are near-identical), but it silently defeated P11's staleness check for anything backdated — exactly what a backfill does on purpose. Fixed in `src/webhooks/handler.ts`: `occurredAt` now derives from `body.created_at` (Unix seconds) when present, falling back to `now` only if it's missing.
+
+**2. After fixing #1, the P10 test still failed (`expected 12 to be 5`).** `makeEpisodeLogger` (`src/persistence/episode-logger.ts`) always used real wall-clock `new Date()` for `episodes.createdAt`/`intents.createdAt`, on both the decision-time insert and the execution-time update. A backfill test running against a fixed past `NOW` had its rows stamped with today's real date — so P10's "executions in the last hour relative to `now`" window never matched any of them, undercounting every time. Fixed by using `entry.execResult?.executedAt ?? entry.proposal.proposedAt` instead — whatever "now" the caller is actually operating on (matters equally for the block 7/8 eval's `VirtualScheduler`, which this same logger serves).
+
+**3. After both fixes, the P10 test STILL failed with the identical numbers.** Root cause: `ingestBackfill` originally only called `decide()`, never `executeApproved()` — so no execution ever had `execResult.ok === true`, and `gatherSnapshot`'s "was this really executed" filter excluded every single row from P10's count, regardless of the first two fixes. Fixed by giving `ingestBackfill` a `World` parameter and calling `executeApproved()` for every approved, execution-bound decision (`BackfillStats` gained a separate `executed` field, distinct from `approved`, since MARK_TERMINAL/ESCALATE proposals are "approved" but never execution-bound).
+
+### A fourth thing, caught live rather than by a test
+
+The first live run of `scripts/backfill.ts --simulate 30` (default demo, meant to show P10) came back with **all 30 rejected via P4**, not P10. Root cause: the default synthetic `errorReason` (`gateway_technical_error`) classifies as TRANSIENT, whose rules-engine proposal fails closed to a +6h delay when downtime status is unknown (`src/strategies/rules.ts`) — and the script happened to run at 18:47 IST, so +6h landed at 00:47 IST, squarely inside P4's 22:00–08:00 blackout window. Correct policy behavior, but wall-clock-dependent and useless as a repeatable P10 demo. Fixed by switching the demo's synthetic `errorReason` to `authentication_failed` (AUTH_ABANDONED), whose NUDGE proposal's `sendAt` is explicitly clamped to the 10:00–20:00 IST window regardless of what time the script runs — makes the P10/P11/P13 demos deterministic at any hour.
+
+### Verified — three real live runs, not asserted
+
+```
+npx tsx scripts/backfill.ts --simulate 30                  # P10: 20 approved/executed, 10 rejected — all via P10
+npx tsx scripts/backfill.ts --simulate 30 --stale-days 240  # P11: 0 approved, 30 rejected — all via P11
+KILL_SWITCH=true npx tsx scripts/backfill.ts --simulate 30  # P13: 0 approved, 30 rejected — all via P13
+```
+
+All three ran against the real dev SQLite DB through the real CLI process (not `.inject()`, not a unit test), each producing exactly the rejection pattern spec §4.2 predicts for that scenario. `npx tsc --noEmit` clean. **182/184 tests passing** (up from 175; 2 gated behind live-credential env vars, unchanged) — new: `test/backfill-ingest.test.ts` (7). Demo SQLite artifacts (`salvage.sqlite*`) deleted after verification, consistent with block 9's cleanup pattern.
+
+## Block 11 — README + demo rehearsal — not started
 
 ## Block 11 — README + demo rehearsal — not started
 

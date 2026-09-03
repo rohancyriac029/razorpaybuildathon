@@ -42,20 +42,33 @@ export function makeEpisodeLogger(
   runId: string | null = null,
 ): EpisodeLogger {
   return async (entry: EpisodeLogEntry): Promise<void> => {
-    const now = new Date().toISOString();
+    // NOT real wall-clock new Date(): this must track whatever "now" the
+    // caller is actually operating on — decision time (entry.proposal.
+    // proposedAt, itself derived from ctx.now by the strategy) on the first
+    // call, execution time (entry.execResult.executedAt, which run.ts sets
+    // from the proposal's own sendAt) on the second. Using real wall-clock
+    // time here silently broke P10's global-rate check for anything running
+    // against simulated or backdated time — the eval (VirtualScheduler) and
+    // the backfill script (block 10) both operate on time that isn't "now."
+    // Caught by block 10's own test: a backfill dated months in the past
+    // logged episodes stamped with today's real date, so P10's "last hour"
+    // window never matched any of them.
+    const rowTimestamp = entry.execResult?.executedAt ?? entry.proposal.proposedAt;
 
     const existingIntent = entry.intentId
       ? db.select({ episodeId: schema.intents.episodeId }).from(schema.intents).where(eq(schema.intents.id, entry.intentId)).get()
       : undefined;
 
     if (existingIntent) {
-      // Second call for this intentId (execute-time update): patch both rows.
+      // Second call for this intentId (execute-time update): patch both rows,
+      // including createdAt — the row's meaningful timestamp for P10 purposes
+      // is now the actual execution time, not the earlier decision time.
       db.update(schema.episodes)
-        .set({ execResult: entry.execResult as unknown as object | null, outcome: entry.outcome })
+        .set({ execResult: entry.execResult as unknown as object | null, outcome: entry.outcome, createdAt: rowTimestamp })
         .where(eq(schema.episodes.id, existingIntent.episodeId))
         .run();
       db.update(schema.intents)
-        .set({ status: intentStatus(entry), razorpayRefId: entry.execResult?.razorpayRefId ?? null })
+        .set({ status: intentStatus(entry), razorpayRefId: entry.execResult?.razorpayRefId ?? null, createdAt: rowTimestamp })
         .where(eq(schema.intents.id, entry.intentId!))
         .run();
       return;
@@ -77,7 +90,7 @@ export function makeEpisodeLogger(
         execResult: entry.execResult as unknown as object | null,
         outcome: entry.outcome,
         runId,
-        createdAt: now,
+        createdAt: rowTimestamp,
       })
       .run();
 
@@ -91,7 +104,7 @@ export function makeEpisodeLogger(
         idempotencyKey: idempotencyKey(entry.proposal.orderId, entry.proposal.attemptNumber),
         status: intentStatus(entry),
         razorpayRefId: entry.execResult?.razorpayRefId ?? null,
-        createdAt: now,
+        createdAt: rowTimestamp,
       })
       .run();
   };
