@@ -28,10 +28,11 @@ const KICKOFF_MESSAGE =
 export class AgentStrategy implements Strategy {
   readonly name = "salvage-agent";
 
-  /** Set by the most recent propose() call — the eval (block 8) reads these for the §5.5.1 offer-attempt metric and the fallback-rate metric. Not part of the Strategy port's return type; adding fields there would ripple through every strategy for one metric only the agent needs. */
+  /** Set by the most recent propose() call — the eval (block 8) reads these for the §5.5.1 offer-attempt metric, the fallback-rate metric, and the §5.4 cost-per-₹100-recovered metric (llm-pricing.ts prices lastUsage). Not part of the Strategy port's return type; adding fields there would ripple through every strategy for metrics only the agent needs. */
   lastOfferAttempted = false;
   lastFellBackToRules = false;
   lastFallbackReason: string | null = null;
+  lastUsage = { inputTokens: 0, outputTokens: 0 };
 
   constructor(
     private readonly llm: LlmClient,
@@ -43,6 +44,7 @@ export class AgentStrategy implements Strategy {
     this.lastOfferAttempted = false;
     this.lastFellBackToRules = false;
     this.lastFallbackReason = null;
+    this.lastUsage = { inputTokens: 0, outputTokens: 0 };
 
     try {
       return await this.runLoop(ctx);
@@ -57,12 +59,14 @@ export class AgentStrategy implements Strategy {
     const turns: LlmTurn[] = [];
 
     for (let step = 0; step < this.maxSteps; step++) {
-      const { toolCall } = await this.llm.complete({
+      const { toolCall, usage } = await this.llm.complete({
         systemPrompt: SYSTEM_PROMPT,
         userMessage: KICKOFF_MESSAGE,
         tools: ALL_TOOLS,
         turns,
       });
+      this.lastUsage.inputTokens += usage.inputTokens;
+      this.lastUsage.outputTokens += usage.outputTokens;
       turns.push({ role: "assistant", toolCall });
 
       if (READ_TOOL_NAMES.has(toolCall.name)) {

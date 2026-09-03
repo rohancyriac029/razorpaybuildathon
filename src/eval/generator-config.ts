@@ -9,6 +9,21 @@
 
 import type { FailureCategory } from "../types.js";
 
+/**
+ * Fixed, not `new Date()`: the eval must generate the identical 120
+ * scenarios on every run, or the LLM cache (spec §5.8) misses every time
+ * scenario text differs by a day — defeating "a reviewer reproduces your
+ * table without an API key." Re-running the eval next month must still
+ * hit the committed cache.
+ */
+export const EVAL_ANCHOR_TIME = new Date("2026-09-01T00:00:00Z");
+
+/** Fixed scenario-generation seed — the 120 scenarios are the SAME across
+ * all 3 "seeds"; only the LLM's sampling varies (spec §5.2 point 5). Mixing
+ * scenario-sampling variance into "seed" would defeat the point of running
+ * multiple seeds to isolate model non-determinism specifically. */
+export const SCENARIO_GENERATION_SEED = 20260901;
+
 export interface GeneratorConfig {
   name: "A" | "B";
   /** Category mix — must sum to 1. Estimate informed by (not lifted from) src/eval/sources.ts; see UNCITED_ASSUMPTIONS there. */

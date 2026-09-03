@@ -237,8 +237,14 @@ describe("tool result shape functions (pure, no LLM)", () => {
     expect(result.economics.attemptsRemaining).toBe(3);
   });
 
-  it("getCustomerHistoryResult returns the raw history object", () => {
+  it("getCustomerHistoryResult returns the history fields but strips customerId (an internal id with no decision-relevant content — see tools.ts's doc)", () => {
     const testCtx = ctx("FUNDS");
-    expect(getCustomerHistoryResult(testCtx)).toBe(testCtx.history);
+    const result = getCustomerHistoryResult(testCtx);
+    expect(result).toEqual({
+      isFirstTime: testCtx.history.isFirstTime,
+      lastPayments: testCtx.history.lastPayments,
+      workingInstrument: testCtx.history.workingInstrument,
+    });
+    expect(result).not.toHaveProperty("customerId");
   });
 });

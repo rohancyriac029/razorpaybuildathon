@@ -55,7 +55,14 @@ export function getFailureContextResult(ctx: EpisodeContext) {
 }
 
 export function getCustomerHistoryResult(ctx: EpisodeContext) {
-  return ctx.history;
+  // Deliberately omits customerId: an internal identifier with no
+  // decision-relevant content, and leaking it into the tool result caused
+  // a real bug (PROGRESS.md block 8) — it's derived from orderId, which is
+  // run-scoped for DB-collision reasons (run-episode.ts), so exposing it
+  // here made the LLM cache key differ across otherwise-identical eval
+  // runs from the second call onward, silently defeating reproducibility.
+  const { isFirstTime, lastPayments, workingInstrument } = ctx.history;
+  return { isFirstTime, lastPayments, workingInstrument };
 }
 
 // --- Propose tools -------------------------------------------------------

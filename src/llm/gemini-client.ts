@@ -82,6 +82,22 @@ function toGeminiContents(userMessage: string, turns: LlmTurn[]): GeminiContent[
   return contents;
 }
 
+// Free-tier gemini-3.5-flash-lite is 30 RPM (verified 2026-09-02, PROGRESS.md
+// block 6/8 — re-check before relying on it). AgentStrategy falls back to
+// RulesStrategy on ANY thrown error (spec §3.1.1), including a 429 — so
+// without throttling here, a real multi-hundred-call eval run would hit
+// rate limits partway through and silently replace agent episodes with
+// Rules-strategy fallbacks, corrupting the very numbers the eval exists to
+// measure. 2.5s between calls is ~24 RPM, comfortably under the cap.
+const MIN_INTERVAL_MS = 2_500;
+let lastCallAt = 0;
+
+async function throttle(): Promise<void> {
+  const wait = MIN_INTERVAL_MS - (Date.now() - lastCallAt);
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  lastCallAt = Date.now();
+}
+
 export class GeminiClient implements LlmClient {
   readonly provider = "gemini";
   constructor(
@@ -97,25 +113,41 @@ export class GeminiClient implements LlmClient {
       toolConfig: { functionCallingConfig: { mode: "ANY" } },
     };
 
-    const res = await fetch(`${API_BASE}/${this.model}:generateContent?key=${this.apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    // Retries a 429 with backoff — belt-and-braces alongside the throttle
+    // above, which should prevent most of these outright. Anything else
+    // (4xx/5xx) fails immediately into AgentStrategy's existing
+    // Rules-strategy fallback (spec §3.1.1) rather than retrying blindly.
+    const RETRY_DELAYS_MS = [5_000, 15_000];
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+      await throttle();
+      const res = await fetch(`${API_BASE}/${this.model}:generateContent?key=${this.apiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
-    if (!res.ok) {
+      if (res.ok) {
+        return this.parseResponse(await res.json());
+      }
+
       const text = await res.text();
-      throw new Error(`Gemini API error ${res.status}: ${text}`);
+      lastError = new Error(`Gemini API error ${res.status}: ${text}`);
+      if (res.status !== 429 || attempt === RETRY_DELAYS_MS.length) break;
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
     }
+    throw lastError;
+  }
 
-    const data = (await res.json()) as {
+  private parseResponse(data: unknown): LlmCompleteResponse {
+    const parsed = data as {
       candidates?: Array<{ content?: { parts?: GeminiPart[] } }>;
       usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
     };
 
-    const part = data.candidates?.[0]?.content?.parts?.find((p) => p.functionCall);
+    const part = parsed.candidates?.[0]?.content?.parts?.find((p) => p.functionCall);
     if (!part?.functionCall) {
-      throw new Error(`Gemini response contained no function call: ${JSON.stringify(data).slice(0, 500)}`);
+      throw new Error(`Gemini response contained no function call: ${JSON.stringify(parsed).slice(0, 500)}`);
     }
 
     return {
@@ -126,8 +158,8 @@ export class GeminiClient implements LlmClient {
         raw: part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : undefined,
       },
       usage: {
-        inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
-        outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+        inputTokens: parsed.usageMetadata?.promptTokenCount ?? 0,
+        outputTokens: parsed.usageMetadata?.candidatesTokenCount ?? 0,
       },
     };
   }

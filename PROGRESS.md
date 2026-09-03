@@ -284,7 +284,51 @@ Ran the generator at n=500 for both configs before writing tests, not after: cat
 
 **Not yet wired:** the eval runner itself (orchestration loop across 120 scenarios × 5 strategies × 3 seeds, metrics computation, the markdown table, the paired bootstrap) is block 8. `CachingLlmClient` (block 6) still isn't threaded into anything — block 8 is where seeds and caching actually matter. `RulesStrategy` (block 5) and `AgentStrategy` (block 6) aren't exercised against `SimWorld` yet in a test — only `NoRetry`/`FixedInterval`/`Oracle` were, since those three are new to this block; block 8's full run will exercise all five together as a matter of course.
 
-## Block 8 — eval runner — not started
+## Block 8 — eval runner ✅ done (2026-09-03)
+
+Spec §5's whole point, wired end to end and run for real: `npm run eval` produces a genuine markdown report from real executions — including real Gemini calls — not a mock. Also the most bug-dense block in this build: three real, load-bearing bugs found and fixed by actually running the thing twice, not by reasoning about it.
+
+| File | What |
+|---|---|
+| `src/eval/run-episode.ts` | `runEpisode()` — one scenario through one strategy for one seed, up to 3 attempts (spec §3's real multi-attempt trajectory, not a single isolated decision). Reuses `assembleEpisodeContext` (block 3) for real. |
+| `src/eval/orchestrator.ts` | `runFullEval()` — drives all 5 strategies across the replay set for every seed; `llmClient: null` skips `salvage-agent` cleanly (the other 4 still run) when no LLM credentials are available |
+| `src/eval/metrics.ts` | `aggregate()` — spec §5.4's metrics, with §5.5/§5.5.1's TERMINAL and discount splits computed **per scenario** ("4/50"), not per attempt — a strategy that never learns can propose a TERMINAL retry on all 3 attempts of the same scenario, and spec's framing counts whether the scenario saw one, not how many |
+| `src/eval/paired-bootstrap.ts` | Spec §5.8's paired bootstrap CI, seeded for reproducibility |
+| `src/eval/aggregate-run.ts` | Glues orchestrator output → per-strategy report rows + the agent-vs-rules paired comparison |
+| `src/eval/report.ts` | Pure markdown rendering — benchmark table, TERMINAL split, discount split, cost summary, paired-comparison sentence |
+| `src/eval/llm-pricing.ts` | Gemini pricing ($0.30/$2.50 per M tokens) and USD→INR (₹95), both verified live 2026-09-02, both flagged to re-check before quoting in a demo |
+| `src/eval/eval-db.ts` | Dedicated, self-bootstrapping, file-backed eval database — separate from dev `salvage.sqlite`, persists across runs on purpose (it carries the committed LLM cache) |
+| `eval/run.ts` | The actual `npm run eval` entrypoint. `EVAL_CONFIG` (default B, the headline config), `EVAL_SCENARIOS` (default 120), `EVAL_SEEDS` (default 3) |
+
+### Three real bugs, found by running it, not by reading it
+
+**1. `runEpisode` crashed on `failures.eventId`'s foreign key.** Simulated failures need a matching `webhook_events` row first, exactly like a real webhook always gets via `dedupeAndStore` — I'd forgotten it for the synthetic path. Caught immediately by the first test run (100% of episode tests failed identically).
+
+**2. Re-running the eval against the persisted DB crashed on a duplicate primary key.** `orderId` was originally derived from `(config, scenario, strategy, seed)` alone — deterministic within a run, but colliding across separate invocations of `npm run eval` against the same file. Worse than the crash: even with idempotent inserts, a second run would have inherited a stale `order.status='paid'` from the *first* run's recovery, silently corrupting the second run's P8 recheck before any real execution happened. Fixed by scoping `orderId` to the run itself (`runId`, which already includes a timestamp) — collision-free across runs, while the LLM cache (keyed independently by request content) is untouched by the change.
+
+**3. The eval was not actually reproducible, and it took a real byte-for-byte diff between two live runs to find out why.** First fix attempt: the LLM cache key didn't include an episode-scoping component, so the *first* call of every episode — always identical (empty turns, fixed kickoff message) regardless of scenario — silently shared one cached response across different scenarios. Fixed by constructing one `CachingLlmClient` per scenario. That fix was necessary but not sufficient: a second live A/B run still diverged from the *second* call onward. Traced by dumping the actual cache table's contents in order and diffing two real runs' tool-call sequences by hand, then confirmed with a targeted repro script comparing `assembleEpisodeContext` output across two different `orderId`s for the identical scenario: `getCustomerHistoryResult` was returning `ctx.history` **including `customerId`** — an internal identifier with zero decision-relevant content, derived from the now run-scoped `orderId`, so it differed between runs and silently poisoned every cache key downstream of the second call. Fixed by stripping it in `tools.ts` (block 6) — the model never needed to see it. **Verified, not asserted:** two full live runs against Gemini, cold then warm — `56s` → `1.7s`, and the entire report (benchmark table, cost, paired bootstrap CI, every number) came back **byte-for-byte identical** except the elapsed-time line. That's spec §5.8's reproducibility bar, actually met, not just claimed.
+
+### Rate limiting, added before attempting anything at scale
+
+`AgentStrategy` falls back to `RulesStrategy` on *any* thrown error (spec §3.1.1) — including a 429. Without throttling, a real multi-hundred-call run would hit Gemini's 30 RPM free-tier cap partway through and silently replace agent episodes with Rules-strategy fallbacks, corrupting the exact numbers the eval exists to produce. Added a module-level throttle to `GeminiClient` (~24 RPM, under the cap) plus 429-specific retry with backoff, belt-and-braces. This also means the throttle is correctly shared across every `GeminiClient`/`CachingLlmClient` instance in the process, matching Google's own "limits apply per project" behavior.
+
+### Verified
+
+`npx tsc --noEmit` clean. **160/162 tests passing** (up from 132; 2 gated behind live-credential env vars, unchanged). New: `test/eval-paired-bootstrap.test.ts` (5), `test/eval-run-episode.test.ts` (6), `test/eval-orchestrator.test.ts` (3, including the determinism proof — seed 1/2/3 produce byte-identical outcomes for every deterministic strategy), `test/eval-aggregate-run.test.ts` (4), `test/eval-report.test.ts` (13), `test/llm-cache.test.ts` (3, a direct regression test for bug #3's fix — two different episode keys with byte-identical requests do NOT share a cache entry; the same key does).
+
+**Real runs against Gemini, both documented above:** a 3-scenario/1-seed smoke test through the actual CLI (not a unit test) exercising every strategy including `salvage-agent`, and the cold/warm reproducibility A/B. Real, honest result worth keeping in mind for the demo: at n=3, `rules-engine` beat `salvage-agent` in the first run — exactly the "more likely outcome" spec §5.3 predicts, and not something to chase away by tuning.
+
+### Not yet run: the real 120×3×5 headline eval
+
+**Deliberately not executed yet**, to conserve Gemini's free-tier daily quota (1,500 requests) until it's wanted for real. Spec's own estimate is 700-900 model calls for a full run; at the ~24 RPM throttle that's roughly 30-45 minutes of wall-clock time. When ready:
+
+```bash
+npm run eval                              # config B (headline), 120 scenarios, 3 seeds — the default
+EVAL_CONFIG=A npm run eval                # config A (tuning), for comparison
+EVAL_SCENARIOS=20 EVAL_SEEDS=1 npm run eval   # a cheap, fast sanity check before committing to the full run
+```
+
+Run it once, then **commit `salvage-eval.sqlite`** (spec §5.8 — it carries the LLM cache; a reviewer reruns the identical table with no API key). Currently gitignored via the `*.sqlite` pattern (block 0) — that pattern needs a `!salvage-eval.sqlite` exception added once a real run is ready to commit; not added yet since there is nothing worth committing until then.
 
 ## Block 9 — static HTML page — not started
 
