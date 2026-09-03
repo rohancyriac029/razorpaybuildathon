@@ -3,6 +3,7 @@
 // multi-step design (spec §3), not a single isolated decision. Reuses
 // assembleEpisodeContext (block 3) for real, so the eval drives the exact
 // context-construction code production does, not a parallel path.
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
@@ -191,6 +192,33 @@ export async function runEpisode(
   const llmCostPaise = tokenCostPaise(llmInputTokens, llmOutputTokens);
   const netRecoveredPaise =
     (recovered ? scenario.amountPaise : 0) - executedAttemptCount * ATTEMPT_COST_PAISE - contactsUsed * CONTACT_GOODWILL_COST_PAISE;
+
+  // Persisted, not just returned in-memory: spec's "replayable from the DB"
+  // ethos (§3.4) applies to eval results too, and the static HTML page's
+  // scoreboard (block 9) reads this table directly rather than needing a
+  // live eval process to have just run.
+  db.insert(schema.evalRuns)
+    .values({
+      id: randomUUID(),
+      runId,
+      configName: config.name,
+      strategyName: strategy.name,
+      scenarioId: scenario.id,
+      seed,
+      recovered,
+      netRecoveredPaise,
+      wastedAttempts,
+      contactsUsed,
+      terminalRetriesProposed: terminalRetryProposed,
+      terminalRetriesExecuted: terminalRetryExecuted,
+      offersProposed,
+      offersSent,
+      timeToRecoveryMs,
+      oracleHeadroomPaise: null, // computed at aggregation time (aggregate-run.ts), not per-episode
+      llmCostPaiseUsd: llmCostPaise,
+      createdAt: new Date().toISOString(),
+    })
+    .run();
 
   return {
     scenarioId: scenario.id,

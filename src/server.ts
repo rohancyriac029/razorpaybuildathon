@@ -1,5 +1,10 @@
 // Spec §6 block 1: Fastify POST /webhooks/razorpay. Verify signature, reject
 // unverified with 401, return 200 fast, process async.
+// Spec §6 block 9: also serves the static audit/eval-scoreboard page and its
+// two read-only JSON endpoints — "one static HTML page," no framework, but
+// it needs somewhere to fetch real data from, and this server already has
+// the DB connection.
+import { readFileSync } from "node:fs";
 import Fastify from "fastify";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { db as defaultDb } from "./db/client.js";
@@ -14,6 +19,8 @@ import {
   processSubscriptionLifecycle,
   processDowntime,
 } from "./webhooks/handler.js";
+import { listOrdersWithEpisodes, getDecisionChain } from "./audit/decision-chain.js";
+import { latestRunReport } from "./eval/latest-run-report.js";
 
 /**
  * db is injectable so tests can run the real Fastify request lifecycle
@@ -52,6 +59,25 @@ export function buildServer(
   );
 
   app.get("/health", async () => ({ ok: true }));
+
+  app.get("/", async (_req, reply) => {
+    try {
+      const html = readFileSync("public/index.html", "utf-8");
+      reply.type("text/html").send(html);
+    } catch {
+      reply.code(404).send({ error: "public/index.html not found" });
+    }
+  });
+
+  app.get("/api/orders", async () => listOrdersWithEpisodes(db));
+
+  app.get<{ Params: { id: string } }>("/api/orders/:id", async (req, reply) => {
+    const chain = getDecisionChain(db, req.params.id);
+    if (!chain) return reply.code(404).send({ error: "order not found" });
+    return chain;
+  });
+
+  app.get("/api/eval/latest", async () => latestRunReport(db));
 
   app.post("/webhooks/razorpay", async (req, reply) => {
     const rawBody = (req as unknown as { rawBody: string }).rawBody ?? "";

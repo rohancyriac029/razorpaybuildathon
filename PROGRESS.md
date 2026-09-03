@@ -330,7 +330,28 @@ EVAL_SCENARIOS=20 EVAL_SEEDS=1 npm run eval   # a cheap, fast sanity check befor
 
 Run it once, then **commit `salvage-eval.sqlite`** (spec §5.8 — it carries the LLM cache; a reviewer reruns the identical table with no API key). Currently gitignored via the `*.sqlite` pattern (block 0) — that pattern needs a `!salvage-eval.sqlite` exception added once a real run is ready to commit; not added yet since there is nothing worth committing until then.
 
-## Block 9 — static HTML page — not started
+## Block 9 — static HTML page ✅ done (2026-09-03)
+
+Spec §6 block 9: "Decision detail with full reasoning chain and policy verdict; eval scoreboard. One file, no framework." One HTML file with inline CSS/JS, fetching real data from two new read-only API routes on the existing Fastify server — no build step, no framework, no separate static-site generator.
+
+| File | What |
+|---|---|
+| `public/index.html` | The page. Two tabs: **Decisions** (order list → click → full multi-attempt reasoning chain, each step showing the proposal, the policy verdict color-coded by kind, the exec result, and the outcome) and **Eval scoreboard** (the benchmark table + paired bootstrap sentence, rendered client-side from JSON, not server-rendered markdown) |
+| `src/audit/decision-chain.ts` | `listOrdersWithEpisodes()` / `getDecisionChain()` — reads **production/demo episodes only** (`episodes.runId IS NULL`), explicitly excluding eval episodes so a 120×3×5 eval run's ~1800 synthetic orders don't drown out the handful of real demo decisions the page exists to show |
+| `src/eval/latest-run-report.ts` | Reconstructs the same `StrategyReportRow[]` shape `aggregate-run.ts` produces from in-memory results, but from the **persisted** `eval_runs` table — one aggregation implementation serving both the CLI's stdout and the HTML page, not two that could drift apart |
+| `src/server.ts` (extended) | Three new routes: `GET /` (serves the HTML file), `GET /api/orders`, `GET /api/orders/:id`, `GET /api/eval/latest` — all read-only, no auth (matches spec §11's "do not build: auth") |
+
+### A real gap closed along the way: eval results were never persisted
+
+Block 8 shipped `EpisodeRunResult` as an in-memory-only return value — the `eval_runs` table existed in the schema since block 0 but nothing ever wrote to it. This meant "replayable from the DB" (spec §3.4) was true for production episodes but not for eval results, and the HTML page's scoreboard would have had nothing to read once the CLI process exited. Fixed: added a `runId` column (groups one `npm run eval` invocation's rows so the page can find "the latest run"; needed a small migration, `drizzle/0001_crazy_sentinels.sql`), and `runEpisode` now writes one row per episode. `eval/run.ts`'s own stdout table and the HTML page's scoreboard are backed by the same underlying data, computed two different ways (in-memory vs. reconstructed-from-DB) — `test/eval-latest-run-report.test.ts` asserts they agree.
+
+### Verified — not just written, actually served and fetched
+
+- **Real HTTP, not just `.inject()`**: started an actual listening server (`app.listen()`) on a real port, seeded a real multi-attempt decision chain matching spec §3's own example dialogue almost verbatim ("bet on transient, link at +2h" → "I was wrong about transient — switching channel and targeting their historical 20:00 IST window"), plus a real `TERMINAL`-trap-rejected-by-P3 episode, plus a real (deterministic-only, no LLM) eval run — then hit `GET /`, `GET /api/orders`, `GET /api/orders/:id`, and `GET /api/eval/latest` with real `curl` requests and confirmed every response shape matches exactly what the page's client-side JS expects to consume.
+- **Client-side JS syntax validated directly**: extracted the embedded `<script>` block and parsed it with `new Function()` — catches a syntax error the way a browser would, without needing a browser in this environment.
+- `npx tsc --noEmit` clean. **175/177 tests passing** (up from 160; 2 gated behind live-credential env vars, unchanged). New: `test/eval-runs-persistence.test.ts` (2), `test/eval-latest-run-report.test.ts` (3, including the "reconstructs the same rows a fresh aggregation would" cross-check and the "picks the most recent run" case), `test/audit-decision-chain.test.ts` (5, including the production-vs-eval-episode exclusion and the multi-attempt chain ordering), `test/server-api-routes.test.ts` (5, real request/response round-trips through the actual server).
+
+**Known limitation, stated rather than hidden:** `latestRunReport`'s TERMINAL-scenario detection is inferred post-hoc from `eval_runs` rows (a scenario is inferred TERMINAL if any strategy's row shows a nonzero `terminalRetriesProposed`/`Executed`), because the full `Scenario` — including its category — isn't persisted to `eval_runs` by design (it would mean storing the ground-truth answer key alongside the results, in tension with spec §5.2's firewall spirit). This undercounts TERMINAL scenarios where every strategy correctly avoided proposing a retry at all. The HTML page's scoreboard is a convenience view; `npm run eval`'s own stdout — computed from live `Scenario` objects with real categories — remains the authoritative table for the README.
 
 ## Block 10 — backfill script + kill-switch demo — not started
 

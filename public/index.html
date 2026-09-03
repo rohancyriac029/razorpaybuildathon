@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>salvage — decision audit</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --panel-2: #171b24;
+    --border: #262b36;
+    --text: #e6e8ec;
+    --muted: #8b93a3;
+    --accent: #5b8def;
+    --green: #3ecf8e;
+    --red: #f26d6d;
+    --amber: #f2b84b;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header h1 code { color: var(--accent); }
+  nav { display: flex; gap: 4px; }
+  nav button {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  nav button.active { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+  main { display: none; padding: 24px; max-width: 1200px; margin: 0 auto; }
+  main.active { display: block; }
+
+  /* --- Decisions tab --- */
+  #decisions-layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  #order-list { max-height: 80vh; overflow-y: auto; }
+  .order-row {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .order-row:hover { background: var(--panel-2); }
+  .order-row.selected { background: var(--panel-2); border-left: 3px solid var(--accent); }
+  .order-row .id { font-family: monospace; font-size: 12px; color: var(--muted); }
+  .order-row .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge.paid, .badge.recovered { background: rgba(62,207,142,.15); color: var(--green); }
+  .badge.attempted, .badge.pending { background: rgba(242,184,75,.15); color: var(--amber); }
+  .badge.escalated, .badge.rejected, .badge.cancelled { background: rgba(242,109,109,.15); color: var(--red); }
+
+  #chain { padding: 18px; }
+  #chain .empty { color: var(--muted); padding: 40px; text-align: center; }
+  .step {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+    background: var(--panel-2);
+  }
+  .step .step-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .step .step-head .attempt { font-weight: 600; font-size: 13px; }
+  .step .step-head .strategy { font-size: 12px; color: var(--muted); font-family: monospace; }
+  .step .reasoning { margin: 8px 0; padding: 10px 12px; background: var(--bg); border-radius: 6px; font-size: 13px; }
+  .step .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 12px; flex-wrap: wrap; }
+  .verdict { font-weight: 600; padding: 2px 8px; border-radius: 4px; font-family: monospace; }
+  .verdict.APPROVE { color: var(--green); background: rgba(62,207,142,.12); }
+  .verdict.REJECT { color: var(--red); background: rgba(242,109,109,.12); }
+  .verdict.MODIFY { color: var(--amber); background: rgba(242,184,75,.12); }
+  .rule-id { font-family: monospace; color: var(--muted); }
+
+  /* --- Eval tab --- */
+  #eval-meta { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+  th { background: var(--panel-2); font-weight: 600; }
+  tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+  h2 { font-size: 14px; margin: 24px 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  #paired-comparison { padding: 12px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>salvage <code>/</code> decision audit</h1>
+  <nav>
+    <button id="tab-btn-decisions" class="active">Decisions</button>
+    <button id="tab-btn-eval">Eval scoreboard</button>
+  </nav>
+</header>
+
+<main id="tab-decisions" class="active">
+  <div id="decisions-layout">
+    <div class="panel">
+      <div id="order-list"><div class="empty" style="padding:20px;color:var(--muted)">Loading…</div></div>
+    </div>
+    <div class="panel">
+      <div id="chain"><div class="empty">Select an order to see its full reasoning chain — every attempt, its proposal, the policy verdict, and the outcome.</div></div>
+    </div>
+  </div>
+</main>
+
+<main id="tab-eval">
+  <div id="eval-meta"></div>
+  <div id="eval-content"></div>
+</main>
+
+<script>
+const API = {
+  orders: () => fetch("/api/orders").then(r => r.json()),
+  order: (id) => fetch(`/api/orders/${encodeURIComponent(id)}`).then(r => r.json()),
+  evalLatest: () => fetch("/api/eval/latest").then(r => r.json()),
+};
+
+function fmtRupees(paise) {
+  const sign = paise < 0 ? "-" : "";
+  return `${sign}₹${(Math.abs(paise) / 100).toFixed(2)}`;
+}
+function fmtPct(x) { return `${(x * 100).toFixed(1)}%`; }
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+// --- Tabs -------------------------------------------------------------
+const tabs = { decisions: document.getElementById("tab-decisions"), eval: document.getElementById("tab-eval") };
+const tabBtns = { decisions: document.getElementById("tab-btn-decisions"), eval: document.getElementById("tab-btn-eval") };
+function showTab(name) {
+  for (const k in tabs) { tabs[k].classList.toggle("active", k === name); tabBtns[k].classList.toggle("active", k === name); }
+  if (name === "eval") loadEval();
+}
+tabBtns.decisions.onclick = () => showTab("decisions");
+tabBtns.eval.onclick = () => showTab("eval");
+
+// --- Decisions tab ------------------------------------------------------
+async function loadOrders() {
+  const orders = await API.orders();
+  const list = document.getElementById("order-list");
+  if (orders.length === 0) {
+    list.innerHTML = `<div class="empty" style="padding:20px;color:var(--muted)">No production decisions yet. Trigger a real test-mode failure (see PROGRESS.md's live demo recipe) or run the spine test to populate this.</div>`;
+    return;
+  }
+  list.innerHTML = orders.map(o => `
+    <div class="order-row" data-id="${esc(o.orderId)}">
+      <div class="id">${esc(o.razorpayOrderId)}</div>
+      <div class="meta">
+        ${fmtRupees(o.amount)} · <span class="badge ${esc(o.status)}">${esc(o.status)}</span>
+        · ${o.attempts} attempt${o.attempts === 1 ? "" : "s"}
+        ${o.latestOutcome ? `· <span class="badge ${esc(o.latestOutcome)}">${esc(o.latestOutcome)}</span>` : ""}
+      </div>
+    </div>`).join("");
+  list.querySelectorAll(".order-row").forEach(el => {
+    el.onclick = () => selectOrder(el.dataset.id);
+  });
+  selectOrder(orders[0].orderId);
+}
+
+async function selectOrder(orderId) {
+  document.querySelectorAll(".order-row").forEach(el => el.classList.toggle("selected", el.dataset.id === orderId));
+  const chain = await API.order(orderId);
+  const el = document.getElementById("chain");
+  if (!chain) { el.innerHTML = `<div class="empty">Not found.</div>`; return; }
+  el.innerHTML = `
+    <div style="margin-bottom:16px;font-size:13px;color:var(--muted)">
+      ${esc(chain.order.razorpayOrderId)} · ${fmtRupees(chain.order.amount)} · ${chain.steps.length} attempt${chain.steps.length===1?"":"s"}
+    </div>
+    ${chain.steps.map(renderStep).join("")}
+  `;
+}
+
+function renderStep(s) {
+  const proposal = s.proposal || {};
+  const exec = s.execResult;
+  return `
+    <div class="step">
+      <div class="step-head">
+        <span class="attempt">Attempt ${s.attemptNumber} — ${esc(proposal.type || "?")}</span>
+        <span class="strategy">${esc(s.strategyName)}</span>
+      </div>
+      <div class="reasoning">${esc(s.reasoning)}</div>
+      <div class="row">
+        <span class="verdict ${esc(s.verdictKind)}">${esc(s.verdictKind)}</span>
+        <span class="rule-id">${esc(s.verdictRuleId)}</span>
+        <span class="muted">${esc(s.verdictReason)}</span>
+      </div>
+      ${exec ? `<div class="row"><span class="muted">executed:</span> ${exec.ok ? `<span style="color:var(--green)">ok</span>` : `<span style="color:var(--red)">failed</span>`} — ${esc(exec.detail)}</div>` : ""}
+      ${s.outcome ? `<div class="row"><span class="muted">outcome:</span> <span class="badge ${esc(s.outcome)}">${esc(s.outcome)}</span></div>` : ""}
+      <div class="row muted" style="font-size:11px">${new Date(s.createdAt).toISOString()} · context ${esc(s.contextHash.slice(0,12))}…</div>
+    </div>`;
+}
+
+// --- Eval tab -----------------------------------------------------------
+let evalLoaded = false;
+async function loadEval() {
+  if (evalLoaded) return;
+  evalLoaded = true;
+  const report = await API.evalLatest();
+  const meta = document.getElementById("eval-meta");
+  const content = document.getElementById("eval-content");
+
+  if (!report.runId) {
+    meta.textContent = "No eval run yet.";
+    content.innerHTML = `<p class="muted">Run <code>npm run eval</code> to populate this scoreboard.</p>`;
+    return;
+  }
+
+  meta.textContent = `Run ${report.runId} · config ${report.configName}`;
+
+  const order = ["no-retry", "fixed-24h", "rules-engine", "salvage-agent", "oracle"];
+  const rows = [...report.rows].sort((a, b) => order.indexOf(a.metrics.strategyName) - order.indexOf(b.metrics.strategyName));
+
+  content.innerHTML = `
+    <h2>Benchmark</h2>
+    <table>
+      <tr><th>Strategy</th><th>Recovery rate</th><th>Net ₹ recovered</th><th>Wasted attempts</th><th>TERMINAL proposed</th><th>TERMINAL executed</th><th>Offers proposed</th><th>Offers sent</th><th>Contacts/recovery</th><th>% oracle headroom</th></tr>
+      ${rows.map(r => `<tr>
+        <td>${esc(r.metrics.strategyName)}</td>
+        <td>${fmtPct(r.metrics.recoveryRate)}</td>
+        <td>${fmtRupees(r.metrics.netRecoveredPaise)}</td>
+        <td>${r.metrics.wastedAttemptsTotal}</td>
+        <td>${r.metrics.terminalProposed}/${r.metrics.terminalScenarios}</td>
+        <td>${r.metrics.terminalExecuted}/${r.metrics.terminalScenarios}</td>
+        <td>${r.metrics.offersProposed}/${r.metrics.episodes}</td>
+        <td>${r.metrics.offersSent}/${r.metrics.episodes}</td>
+        <td>${r.metrics.contactsPerRecovery !== null ? r.metrics.contactsPerRecovery.toFixed(2) : "—"}</td>
+        <td>${r.oracleHeadroomPct !== null ? r.oracleHeadroomPct.toFixed(1) + "%" : "—"}</td>
+      </tr>`).join("")}
+    </table>
+
+    ${report.agentVsRules ? `
+    <h2>salvage-agent vs rules-engine — paired bootstrap</h2>
+    <div id="paired-comparison">
+      ${pairedComparisonText(report.agentVsRules)}
+    </div>` : ""}
+  `;
+}
+
+function pairedComparisonText(r) {
+  if (r.n === 0) return `<span class="muted">No paired data.</span>`;
+  const sign = r.meanDiffPaise >= 0 ? "+" : "";
+  const verdict = r.significant
+    ? `The interval excludes zero — ${r.meanDiffPaise > 0 ? "salvage-agent" : "rules-engine"} wins at this confidence level.`
+    : `The interval crosses zero — the difference is not distinguishable from noise at this sample size.`;
+  return `Over ${r.n} matched (scenario, seed) pairs: mean difference ${sign}${fmtRupees(r.meanDiffPaise)} per episode,
+    95% CI [${fmtRupees(r.ci95LowPaise)}, ${fmtRupees(r.ci95HighPaise)}]. ${esc(verdict)}`;
+}
+
+loadOrders();
+</script>
+</body>
+</html>

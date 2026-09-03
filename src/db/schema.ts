@@ -136,6 +136,7 @@ export const intents = sqliteTable("intents", {
 // paired bootstrap comparison (spec §5.8).
 export const evalRuns = sqliteTable("eval_runs", {
   id: text("id").primaryKey(),
+  runId: text("run_id").notNull(), // groups all rows from one `npm run eval` invocation — the HTML page's scoreboard reads the latest runId
   configName: text("config_name").notNull(), // "A" | "B"
   strategyName: text("strategy_name").notNull(),
   scenarioId: text("scenario_id").notNull(),

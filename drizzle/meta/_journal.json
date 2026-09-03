@@ -8,6 +8,13 @@
       "when": 1788363616936,
       "tag": "0000_certain_lockjaw",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788440017025,
+      "tag": "0001_crazy_sentinels",
+      "breakpoints": true
     }
   ]
 }

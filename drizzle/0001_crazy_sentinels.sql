@@ -1,0 +1,1 @@
+ALTER TABLE `eval_runs` ADD `run_id` text NOT NULL;
