@@ -21,6 +21,15 @@ export interface AggregatedMetrics {
   llmCostPaiseTotal: number;
   costPaisePer100RupeesRecovered: number | null;
   oracleHeadroomPct: number | null; // filled in by compareToOracle, not here
+  /**
+   * Attempts where the LLM failed and AgentStrategy silently substituted
+   * RulesStrategy's proposal, over total agent attempts. A high ratio means
+   * this row is not really measuring the agent — at 1.0 it is the rules
+   * baseline under a different name. Reported, not hidden: see
+   * renderFallbackWarning. Both 0 for deterministic strategies.
+   */
+  llmFallbacks: number;
+  agentAttempts: number;
 }
 
 /**
@@ -89,6 +98,8 @@ export function aggregate(
     llmCostPaiseTotal,
     costPaisePer100RupeesRecovered,
     oracleHeadroomPct: null,
+    llmFallbacks: results.reduce((sum, r) => sum + r.llmFallbacks, 0),
+    agentAttempts: results.reduce((sum, r) => sum + r.agentAttempts, 0),
   };
 }
 

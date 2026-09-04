@@ -38,6 +38,35 @@ export function renderBenchmarkTable(rows: StrategyReportRow[]): string {
 }
 
 /** Spec §5.5: the TERMINAL split, on its own for emphasis — "worth ten times a zero." */
+/**
+ * Spec §3.1.1's fallback is correct production behaviour and a measurement
+ * hazard in the eval: when the LLM is unreachable, AgentStrategy quietly
+ * returns RulesStrategy's proposal, so `salvage-agent`'s row becomes the
+ * rules baseline wearing a different name — identical on every metric, with
+ * no error anywhere. That is not hypothetical: a config A run in block 11
+ * came back byte-identical to rules-engine because Ollama had stopped, and
+ * nothing in the output said so.
+ *
+ * Returns "" when no agent episodes ran or none fell back, so a healthy run
+ * prints nothing extra.
+ */
+export function renderFallbackWarning(rows: StrategyReportRow[]): string {
+  const lines: string[] = [];
+  for (const r of rows) {
+    const { agentAttempts, llmFallbacks, strategyName } = r.metrics;
+    if (agentAttempts === 0 || llmFallbacks === 0) continue;
+    const pct = (llmFallbacks / agentAttempts) * 100;
+    const total = pct >= 99.5;
+    lines.push(
+      `${total ? "**INVALID —" : "**WARNING —"} ${strategyName}: ${llmFallbacks}/${agentAttempts} attempts (${pct.toFixed(1)}%) fell back to the rules engine because the LLM call failed.**` +
+        (total
+          ? " Every agent decision in this run was actually made by RulesStrategy, so this row is the rules baseline under another name and must not be reported as an agent result. Check the model is reachable (`curl localhost:11434/api/tags` for Ollama) and re-run."
+          : " Those attempts are rules-engine decisions, not agent decisions — treat this row as a blend."),
+    );
+  }
+  return lines.join("\n\n");
+}
+
 export function renderTerminalSplit(rows: StrategyReportRow[]): string {
   const header = "| Strategy | Proposed (LLM layer) | Executed (post-policy) |\n|---|---|---|";
   const lines = rows.map((r) => {

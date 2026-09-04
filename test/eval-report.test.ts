@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderBenchmarkTable, renderTerminalSplit, renderOfferSplit, renderPairedComparison, renderCostSummary } from "../src/eval/report.js";
+import { renderBenchmarkTable, renderTerminalSplit, renderOfferSplit, renderPairedComparison, renderCostSummary, renderFallbackWarning } from "../src/eval/report.js";
 import type { AggregatedMetrics } from "../src/eval/metrics.js";
 import type { StrategyReportRow } from "../src/eval/report.js";
 
@@ -17,6 +17,8 @@ function metrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetrics 
     offersSent: 0,
     contactsPerRecovery: 1.2,
     medianTimeToRecoveryMs: 3_600_000,
+    llmFallbacks: 0,
+    agentAttempts: 0,
     llmCostPaiseTotal: 0,
     costPaisePer100RupeesRecovered: 0,
     oracleHeadroomPct: null,
@@ -135,5 +137,37 @@ describe("renderCostSummary", () => {
   it("renders — when cost-per-100 is null (nothing recovered to divide by)", () => {
     const table = renderCostSummary([row({}, { costPaisePer100RupeesRecovered: null })]);
     expect(table).toContain("—");
+  });
+});
+
+// The guard that would have caught block 11's config A run: Ollama had
+// stopped, every agent episode silently fell back to RulesStrategy, and the
+// report printed an agent row byte-identical to the rules baseline with no
+// indication anything was wrong.
+describe("renderFallbackWarning", () => {
+  it("says nothing when no agent episodes ran (deterministic-only run)", () => {
+    expect(renderFallbackWarning([row({}, { strategyName: "rules-engine", agentAttempts: 0, llmFallbacks: 0 })])).toBe("");
+  });
+
+  it("says nothing when the agent ran and never fell back", () => {
+    expect(renderFallbackWarning([row({}, { strategyName: "salvage-agent", agentAttempts: 60, llmFallbacks: 0 })])).toBe("");
+  });
+
+  it("flags a partial fallback rate as a blend, not a clean agent result", () => {
+    const out = renderFallbackWarning([row({}, { strategyName: "salvage-agent", agentAttempts: 60, llmFallbacks: 15 })]);
+    expect(out).toContain("WARNING");
+    expect(out).toContain("15/60");
+    expect(out).toContain("25.0%");
+    expect(out).toContain("blend");
+    expect(out).not.toContain("INVALID");
+  });
+
+  it("calls a 100% fallback rate INVALID and names it as the rules baseline in disguise", () => {
+    const out = renderFallbackWarning([row({}, { strategyName: "salvage-agent", agentAttempts: 20, llmFallbacks: 20 })]);
+    expect(out).toContain("INVALID");
+    expect(out).toContain("20/20");
+    expect(out).toContain("100.0%");
+    expect(out).toContain("rules baseline under another name");
+    expect(out).toContain("must not be reported as an agent result");
   });
 });

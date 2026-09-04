@@ -434,9 +434,49 @@ Together these meant the single command the README hands a reviewer for the live
 
 Real run output, all three beats behaving as designed: TERMINAL→`PAYMENT_LINK` proposed→`REJECT (P3)`; TRANSIENT→`PAYMENT_LINK`→`APPROVE (P0)`→`executed ok=true`; and the race→`APPROVE (P0)`→`executed ok=false — P8 recheck: order already paid, execution skipped`.
 
+### The worst bug in the block, caught by a number that looked *too* clean
+
+Running config A to fill the one gap the README couldn't back (§7 calls distribution shift "the only finding this build would defend," but the agent had only ever been measured on config B) produced a result that was suspicious precisely because it was tidy: `salvage-agent` came back **identical to `rules-engine` on every single metric** — 30.0%, ₹1845.00, 1 wasted attempt, 1.17 contacts/recovery, 46.7% headroom — and a paired bootstrap of exactly `+₹0.00`, CI `[₹0.00, ₹0.00]`.
+
+Two facts made that impossible as a real result: config A's cache keys are `A_<scenario>` and the committed cache only holds `B_<scenario>` entries, so those 20 agent episodes could not have been cache hits — yet the run finished in **1 second**. `curl localhost:11434/api/tags` confirmed it: **Ollama had stopped**, every LLM call threw, and `AgentStrategy` did exactly what spec §3.1.1 tells it to — silently returned `RulesStrategy`'s proposal.
+
+So the eval had reported the rules baseline as the agent's result, on every metric, with **no error, no warning, and no way to tell from the output**. Block 8 explicitly worried about this exact hazard (it's why `GeminiClient` got a throttle: "silently replace agent episodes with Rules-strategy fallbacks, corrupting the exact numbers the eval exists to produce") — but nothing ever *detected* it. `AgentStrategy` had exposed `lastFellBackToRules` since block 6 specifically for the eval to read, and `grep -rn "fellBackToRules" src/eval/` returned **nothing**. The metric existed and was never wired up.
+
+For a submission whose entire thesis is a measured agent-vs-rules comparison, silently publishing one strategy's numbers under the other's name is the most damaging failure mode available. Fixed end to end:
+
+| File | Change |
+|---|---|
+| `src/eval/run-episode.ts` | `EpisodeRunResult` gains `llmFallbacks` / `agentAttempts`, counted per attempt from `AgentStrategy.lastFellBackToRules` |
+| `src/eval/metrics.ts` | Both summed into `AggregatedMetrics` |
+| `src/eval/report.ts` | `renderFallbackWarning()` — silent on a healthy run; `**WARNING**` on a partial rate ("treat this row as a blend"); `**INVALID**` at 100%, naming it "the rules baseline under another name … must not be reported as an agent result", with the `curl` command to diagnose it |
+| `eval/run.ts` | Prints it **above** the benchmark table, not in a footnote — if the numbers are suspect the reader needs to know before reading them |
+| `test/eval-report.test.ts` | 4 new tests: silent when no agent ran, silent when it ran cleanly, WARNING (not INVALID) at partial, INVALID at 100% |
+
+**Verified against the real failure, not just the unit tests**: re-running config A with Ollama still down now prints `**INVALID — salvage-agent: 45/45 attempts (100.0%) fell back to the rules engine…**` above the table.
+
+**And the check that mattered most**: re-running the *committed* config B table with Ollama down prints **no warning at all** — zero fallbacks, because the cache serves every response. The numbers in README §5 are genuinely agent-derived, not fallback-contaminated. That was worth confirming rather than assuming, since both runs completed in ~1 second and looked alike from the outside.
+
+Known limitation, stated: `llmFallbacks`/`agentAttempts` are not persisted to `eval_runs` (new columns would need a migration this late), so the HTML scoreboard cannot show the warning — the same class of gap as block 9's post-hoc TERMINAL inference. `npm run eval`'s stdout, which computes them live, remains the authoritative view and is where the warning prints.
+
+### Config A measured, closing the last claim-without-evidence
+
+README §7 asserted that "the relative ordering between strategies under distribution shift is the only finding this build would defend" while the agent had only ever run on config B — a claim with no evidence behind it, which is worse than a small sample. Config A now run for real (281s, 20 genuinely uncached agent episodes, clean — no fallback warning):
+
+| | Config A | Config B |
+|---|---|---|
+| rules-engine | 30.0% · ₹1,845 · 1.17 contacts/recovery | 40.0% · ₹6,066 · 2.25 |
+| salvage-agent | 10.0% · ₹490 · 7.00 | 15.0% · ₹1,005 · 4.00 |
+| oracle | 30.0% · ₹3,952 | 15.0% · ₹1,276 |
+| agent % of oracle headroom | 12.4% | 78.8% |
+| paired bootstrap | −₹67.75, CI [−₹145.40, −₹13.45] | −₹253.05, CI [−₹522.85, −₹34.20] |
+
+**The ordering is stable — rules-engine beats the agent in both worlds, CI excluding zero in both.** That is now a measured finding rather than an assertion, and it doesn't flatter the agent. A weaker second signal points the other way and is written up with its confound stated rather than either hyped or hidden: A → B, the agent's headroom share rises (12.4% → 78.8%) and its contacts/recovery improves (7.00 → 4.00) while the rules engine's *degrades* (1.17 → 2.25) as its hardcoded days-1–7 salary window stops matching the world — directionally what the adaptive thesis predicts, but confounded by the oracle's own ceiling collapsing in config B (₹3,952 → ₹1,276), so the agent is taking a bigger share of a much smaller pie. README §5 and §10 say exactly that.
+
+Because `resetEvalState` clears per run, the committed `salvage-eval.sqlite` was restored to the config B run afterwards (1s, cached, byte-identical, no fallback warning) so the artifact matches README §5's headline table and the HTML scoreboard's "latest run."
+
 ### Verified
 
-`npx tsc --noEmit` clean. **186/188 tests passing** (up from 182; 2 gated behind live-credential env vars, unchanged) — new: `test/eval-reset-state.test.ts` (4). The reduced-scope eval command in README §11 was run for real four times across this block (twice exposing the P10-pollution bug, twice clean and byte-identical), and the full demo path — seed → `npm run dev` → real `curl` against the live server — was exercised end to end after the two entrypoint fixes.
+`npx tsc --noEmit` clean. **190/192 tests passing** (up from 182; 2 gated behind live-credential env vars, unchanged) — new: `test/eval-reset-state.test.ts` (4), `test/eval-report.test.ts` fallback-warning cases (4). The reduced-scope eval command in README §11 was run for real four times across this block (twice exposing the P10-pollution bug, twice clean and byte-identical), and the full demo path — seed → `npm run dev` → real `curl` against the live server — was exercised end to end after the two entrypoint fixes.
 
 ### The starvation bug, fixed in code — and a wrong diagnosis corrected
 

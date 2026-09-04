@@ -23,6 +23,7 @@ import { aggregateRun } from "../src/eval/aggregate-run.js";
 import { CONFIG_A, CONFIG_B } from "../src/eval/generator-config.js";
 import {
   renderBenchmarkTable,
+  renderFallbackWarning,
   renderTerminalSplit,
   renderOfferSplit,
   renderPairedComparison,
@@ -88,6 +89,12 @@ console.error();
 const { rows, agentVsRules } = aggregateRun(output.resultsByStrategy, output.scenarios);
 
 console.log(`# salvage eval — config ${config.name}, ${scenarioCount} scenarios, seeds [${seeds.join(", ")}]\n`);
+
+// Printed ABOVE the table on purpose: if the agent silently fell back to the
+// rules engine, every number below it is suspect and the reader needs to know
+// before they read them, not in a footnote after.
+const fallbackWarning = renderFallbackWarning(rows);
+if (fallbackWarning) console.log(`${fallbackWarning}\n`);
 
 console.log("## Benchmark\n");
 console.log(renderBenchmarkTable(rows));

@@ -41,6 +41,19 @@ export interface EpisodeRunResult {
   offersSent: number;
   timeToRecoveryMs: number | null;
   llmCostPaise: number;
+  /**
+   * How many attempts in this episode had the LLM fail and silently fall back
+   * to RulesStrategy (spec §3.1.1 — correct production behaviour, but a
+   * measurement hazard here). Without this, an eval run with the model
+   * unreachable reports `salvage-agent` numbers that are ACTUALLY
+   * `rules-engine` numbers, identical on every metric, with no signal at all
+   * — which is exactly what happened in block 11 when a config A run came
+   * back byte-identical to the rules baseline because Ollama was down.
+   * Always 0 for the four deterministic strategies.
+   */
+  llmFallbacks: number;
+  /** Attempts where the agent actually ran — the denominator for the above. */
+  agentAttempts: number;
 }
 
 /**
@@ -120,6 +133,8 @@ export async function runEpisode(
   let llmInputTokens = 0;
   let llmOutputTokens = 0;
   let executedAttemptCount = 0;
+  let llmFallbacks = 0;
+  let agentAttempts = 0;
 
   for (let attemptNumber = 1; attemptNumber <= MAX_ATTEMPTS; attemptNumber++) {
     const failureId = `fail_${orderId}_${attemptNumber}`;
@@ -156,6 +171,11 @@ export async function runEpisode(
       llmInputTokens += strategy.lastUsage.inputTokens;
       llmOutputTokens += strategy.lastUsage.outputTokens;
       if (strategy.lastOfferAttempted) offersProposed++;
+      agentAttempts++;
+      // AgentStrategy swallows LLM errors and returns RulesStrategy's proposal
+      // (spec §3.1.1). Correct in production; here it means this "agent"
+      // datapoint is really a rules datapoint, and the report has to say so.
+      if (strategy.lastFellBackToRules) llmFallbacks++;
     }
 
     const isRetryOrContact = decision.proposal.type === "TOKEN_RETRY" || decision.proposal.type === "PAYMENT_LINK" || decision.proposal.type === "NUDGE";
@@ -232,6 +252,8 @@ export async function runEpisode(
     terminalRetryExecuted,
     offersProposed,
     offersSent,
+    llmFallbacks,
+    agentAttempts,
     timeToRecoveryMs,
     llmCostPaise,
   };
