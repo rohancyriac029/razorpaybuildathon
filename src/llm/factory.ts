@@ -3,6 +3,7 @@
 // is changing this env var, not touching agent-strategy.ts or any tool code.
 import { GeminiClient } from "./gemini-client.js";
 import { AnthropicClient } from "./anthropic-client.js";
+import { OllamaClient } from "./ollama-client.js";
 import type { LlmClient } from "./client.js";
 
 export function llmClientFromEnv(env: NodeJS.ProcessEnv = process.env): LlmClient {
@@ -20,5 +21,9 @@ export function llmClientFromEnv(env: NodeJS.ProcessEnv = process.env): LlmClien
     return new AnthropicClient(key);
   }
 
-  throw new Error(`Unknown LLM_PROVIDER "${provider}" — expected "gemini" or "anthropic"`);
+  if (provider === "ollama") {
+    return new OllamaClient(env.OLLAMA_MODEL ?? "llama3.2:3b", env.OLLAMA_BASE_URL ?? "http://localhost:11434");
+  }
+
+  throw new Error(`Unknown LLM_PROVIDER "${provider}" — expected "gemini", "anthropic", or "ollama"`);
 }

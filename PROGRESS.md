@@ -387,9 +387,70 @@ KILL_SWITCH=true npx tsx scripts/backfill.ts --simulate 30  # P13: 0 approved, 3
 
 All three ran against the real dev SQLite DB through the real CLI process (not `.inject()`, not a unit test), each producing exactly the rejection pattern spec §4.2 predicts for that scenario. `npx tsc --noEmit` clean. **182/184 tests passing** (up from 175; 2 gated behind live-credential env vars, unchanged) — new: `test/backfill-ingest.test.ts` (7). Demo SQLite artifacts (`salvage.sqlite*`) deleted after verification, consistent with block 9's cleanup pattern.
 
-## Block 11 — README + demo rehearsal — not started
+## Block 11 — README + demo rehearsal ✅ done (2026-09-04)
 
-## Block 11 — README + demo rehearsal — not started
+Spec §6 block 11, §9's README structure. The final block — and the one that forced the build's biggest real detour: getting an actual, live-generated benchmark table required solving a genuine LLM-provider infrastructure problem discovered only by trying to run the headline eval for real.
+
+| File | What |
+|---|---|
+| `README.md` | The spec §9 structure, all 12 sections, with real data everywhere a placeholder would otherwise be — see below for how each real number was obtained |
+| `src/llm/ollama-client.ts` | A third `LlmClient` implementation — local, free, no quota — added specifically because Gemini's real daily quota blocked finishing the headline eval |
+| `src/llm/factory.ts` | `llmClientFromEnv()` gained `LLM_PROVIDER=ollama` |
+| `.env.example` | Documents the real (corrected) Gemini quota number and the new Ollama option |
+| `.gitignore` | `!salvage-eval.sqlite` exception added — the eval DB (with its LLM cache) is now committed, per spec §5.8 |
+
+### The chain of real problems, in the order they were actually hit
+
+**1. Gemini's free-tier daily quota is 500 requests/day, not 1,500.** The 1,500/day figure recorded in block 6/8 was wrong (or the limit changed) — found by attempting the real 120×3 headline eval twice and watching it die. First attempt (`nohup ... &` detached from the tool's own background tracking) got silently killed by an environment quirk around 490/1800 episodes with no error — a process-lifecycle problem, not a code bug, fixed by using the Bash tool's native `run_in_background` instead of manual `nohup`/`disown`. The second attempt, run correctly, hit a real wall: a direct API call confirmed `429 RESOURCE_EXHAUSTED`, `quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier`, `quotaValue: 500`. Exhausted for the day by this build's own cumulative smoke-testing (blocks 6/8/9/10) plus the two eval attempts.
+
+**2. Local Ollama was the obvious fallback — and the first model tried genuinely failed.** `llama3.2:3b` (already present locally) passes a single-call tool-use test but **cannot sustain this build's multi-turn, schema-strict agent loop**: verified live, it reliably drops out of tool-calling mode into plain prose by turn 2–3, and — more fundamentally — invents wrong field names (`template`/`variables` instead of the schema's `templateId`/`vars`) even after being shown the exact Zod validation error naming the missing field. Ollama also does not support forcing tool choice at the API level (`tool_choice: "required"` is silently ignored, unlike Gemini's `mode: "ANY"` or Anthropic's `tool_choice: {type: "any"}`) — confirmed by direct API test, not assumed. Two mitigations were built into `ollama-client.ts` regardless (a textual "call a tool now" reminder appended to every tool result; a last-resort regex extractor for a JSON-shaped tool call embedded in a prose response) since they're standard, honest practice for local models and meaningfully reduce — without ever fully fixing — this failure mode for a 3B model.
+
+**3. `qwen2.5:7b` (pulled after checking real hardware: RTX 4050 laptop GPU, 6GB VRAM via `nvidia-smi` — `AdapterRAM` via WMI is a known-unreliable source for cards over 4GB, confirmed different/wrong) passed cleanly.** 4/4 consecutive live runs of the same test that broke `llama3.2:3b`: no fallback, valid proposals, substantive timing-aware reasoning genuinely referencing the injected customer history. This became the model actually used for the reported numbers.
+
+**4. Real-world throughput was much slower than a single isolated call suggested.** One live call: ~6–7s. Under real full-eval load (accumulating multi-turn context across genuinely varied scenarios): degraded to ~17–34s/episode. A full 120×3 (1,800-episode) run was projected at 5–6+ hours on this hardware — not workable in the time remaining. Cut to a **20-scenario, 1-seed** reduced run instead, per the user's explicit instruction and consistent with spec §10's own pre-approved cut-list philosophy ("say plainly you ran out of time").
+
+**5. A real, serious bug found while sanity-checking the reduced run's first result: every strategy, including the oracle, showed exactly 0.0% recovery.** Not plausible — an oracle that recovers *nothing* across 20 scenarios contradicts its own design (argmax over a `wouldSucceed` function with category base rates of 35–75%). Root-caused by direct DB inspection, not guesswork: `salvage-eval.sqlite` is a **persistent, intentionally-never-wiped file** (it carries the committed LLM cache, spec §5.8) that had accumulated **10,292 episode rows** — including **2,823 P10 rejections** — from the earlier killed full-scale attempts. P10 (global execution cap) queries system-wide `episodes` state with no `runId` scoping (correct, intentional design for *production*, spec §4.1: the cap must see every execution regardless of which code path proposed it) — but every accumulated episode was timestamped around the same fixed `EVAL_ANCHOR_TIME`, so the cap was already blown before the reduced run's own first episode was ever evaluated. Confirmed via a controlled A/B: config B against a **fresh** DB gave sane, reproducible numbers (rules-engine 40%, oracle 15%, twice, byte-identical) on the very same 20 scenarios; the same config against the **polluted** file gave 0% for everyone. **Not a code bug** — P10 did exactly its job — but a real operational gap: repeatedly re-running `npm run eval` against the one persistent, committed eval DB file eventually starves every future run via its own historical executions. Fixed pragmatically for this submission: wiped `episodes`/`intents`/`orders`/`failures`/`webhook_events`/`customers`/`subscriptions`/`eval_runs` while explicitly preserving `llm_cache` (1,490 real cached responses kept, zero re-spent quota) — the policy-relevant state resets, the expensive-to-regenerate LLM cache doesn't. **Flagged here rather than quietly fixed**: a real headline-scale run, done once without interruption, would never hit this — it's an artifact specific to this build's own repeated killed-and-restarted attempts, not a latent flaw a reviewer would hit running the committed reproduction command once.
+
+### The result actually reported
+
+Config B, 20 scenarios, seed 1, real `qwen2.5:7b` calls (not scripted/mocked): rules-engine 40.0% recovery / ₹6,066 net; salvage-agent 15.0% / ₹1,005; oracle (ceiling) 15.0% / ₹1,276. Paired bootstrap, agent vs. rules: −₹253.05/episode, 95% CI [−₹522.85, −₹34.20] — **excludes zero, rules-engine wins at this sample size**. Reported as-is, per spec's explicit instruction not to tune the generator until the agent wins — README §10 gives a data-grounded theory (contacts/recovery: 4.00 for the agent vs. 2.25 for rules — the agent isn't failing to recover, it's spending nearly 2x the customer touches per success) rather than hiding the result. Also documented honestly: rules-engine's ₹6,066 exceeding the oracle's ₹1,276 produces a >100% "oracle headroom" figure (475.4%) — not a bug (confirmed: `oracleHeadroomPct = strategyNet / oracleNet * 100`, uncapped by design), but exactly the oracle limitation spec §5.6 pre-warns about and asks to be owned in the README, not hidden.
+
+### Two more real bugs, found by actually running the demo path — both in the production entrypoint
+
+Writing the demo seeder meant running `npx tsx src/server.ts` (what `npm run dev` runs, and what README §6/§11 tell a reviewer to run) for the first time as a *process* rather than via `buildServer()` in a test. It did not work, for two stacked reasons — the second hidden entirely behind the first:
+
+**1. The main-module guard never fires on Windows, so `npm run dev` silently starts nothing.** `src/server.ts` used the common idiom `import.meta.url === \`file://${process.argv[1]}\``. On Windows `import.meta.url` is `file:///D:/razorpay/src/server.ts` while `process.argv[1]` is `D:\razorpay\src\server.ts` — different separators, different slash count, so the comparison is *always* false. The server exited 0 with no output and no error, which is the worst possible failure mode: it looks like it worked. Proven directly (a 4-line script printing both values and both comparisons) rather than assumed, then fixed with `node:url`'s `pathToFileURL`, which normalises drive letters and separators on every platform. **Every block-9 "real HTTP" verification had gone through `buildServer()` or `app.listen()` directly, so nothing had ever exercised this line.**
+
+**2. The entrypoint never loaded `.env`.** Only visible once the guard was fixed and the block actually ran: it died on ``Error: `key_id` or `oauthToken` is mandatory`` because `RAZORPAY_KEY_ID` was never read. `eval/run.ts` and `scripts/backfill.ts` both call `process.loadEnvFile(".env")`; the production entrypoint alone did not. Fixed to match.
+
+Together these meant the single command the README hands a reviewer for the live demo could not start. Now verified end to end: real server listening on :3000, real `curl` against `/api/orders` and `/api/orders/:id` returning all three seeded decision chains with correct verdicts.
+
+### Demo assets (spec §6 block 11's other half: "rehearse twice")
+
+| File | What |
+|---|---|
+| `scripts/seed-demo.ts` (`npm run seed:demo`) | Seeds spec §8's beats **through the real pipeline** — real `processPaymentFailed` classification, real `RulesPolicyEngine`, real `decide()`/`executeApproved()` — never hand-written rows. Three beats: the 1:30–3:00 TERMINAL trap (`debit_instrument_blocked`, deliberately the most "dressed as recoverable" TERMINAL reason, with `FixedIntervalStrategy` proposing a retry anyway and **P3 rejecting it**); a normal TRANSIENT→link recovery; and the **P8 race** (order marked paid between `decide()` and `executeApproved()`, caught by the pre-execution recheck — spec §8 calls this "the most convincing of the three"). Idempotent: re-running dedupes at the webhook layer. |
+| `DEMO.md` | The 5-minute runbook: every beat with its command and what to say, plus the three graceful failures and four sharp-edged questions with honest answers — explicitly including "my agent loses to the rules engine," the n=20 caveat, the oracle-is-my-own-generator caveat, and the fact that the offer trap reads **0/20 proposed** in this sample rather than the "6 attempts blocked" spec §8's template optimistically assumes. |
+
+Real run output, all three beats behaving as designed: TERMINAL→`PAYMENT_LINK` proposed→`REJECT (P3)`; TRANSIENT→`PAYMENT_LINK`→`APPROVE (P0)`→`executed ok=true`; and the race→`APPROVE (P0)`→`executed ok=false — P8 recheck: order already paid, execution skipped`.
+
+### Verified
+
+`npx tsc --noEmit` clean. **186/188 tests passing** (up from 182; 2 gated behind live-credential env vars, unchanged) — new: `test/eval-reset-state.test.ts` (4). The reduced-scope eval command in README §11 was run for real four times across this block (twice exposing the P10-pollution bug, twice clean and byte-identical), and the full demo path — seed → `npm run dev` → real `curl` against the live server — was exercised end to end after the two entrypoint fixes.
+
+### The starvation bug, fixed in code — and a wrong diagnosis corrected
+
+Re-running the exact reproduction command initially did **not** replay from cache, and my first diagnosis was **wrong**: I attributed it to `qwen2.5:7b`'s sampling not being pinned to zero temperature, and softened the README's reproducibility claim accordingly. That was the wrong root cause. The real one is the P10 pollution described above, one step further down the chain: with a polluted database, P10 **rejects** proposals it would otherwise approve → different verdicts → a different `turns` array fed back to the model on the next turn → a different cache key → a miss, cascading through the rest of the episode. The cache was never the problem; the decisions upstream of it were.
+
+Fixed properly rather than documented as a limitation:
+
+| File | What |
+|---|---|
+| `src/eval/reset-state.ts` | `resetEvalState(db)` — clears every policy-relevant table (`intents`, `episodes`, `eval_runs`, `failures`, `orders`, `subscriptions`, `webhook_events`, `customers`) while explicitly preserving `llm_cache`. Deliberately NOT wired into `makeEvalDb`, so a mis-set `EVAL_DB` can never implicitly destroy a real database — only the eval CLI calls it. |
+| `eval/run.ts` | Calls it at the start of every run and reports what it cleared |
+| `test/eval-reset-state.test.ts` | 4 tests. The two load-bearing ones don't test the delete statement — they run `runFullEval` **twice against the same database** and assert the real property: without a reset the second run's oracle recovers **exactly 0** (the bug, reproduced in a test), and with a reset the second run's full per-strategy recovered-vector is **identical** to the first (the fix). |
+
+**Verified after the fix, by running the committed reproduction command twice back to back**: each run completes in **1 second making zero LLM calls**, and the two reports are byte-for-byte identical — every recovery rate, every ₹ figure, the paired-bootstrap CI — differing only in the run id and the count of rows cleared. That is spec §5.8's actual bar ("a reviewer reruns the identical table with no API key"), now met with a local model and no network access at all. README §11's claim was restored to the strong version because it is now true and tested, not because it reads better.
 
 ---
 

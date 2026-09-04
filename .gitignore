@@ -12,4 +12,5 @@ dist/
 *.sqlite-journal
 *.sqlite-shm
 *.sqlite-wal
+!salvage-eval.sqlite
 .DS_Store

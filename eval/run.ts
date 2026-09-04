@@ -29,6 +29,7 @@ import {
   renderCostSummary,
 } from "../src/eval/report.js";
 import { llmClientFromEnv } from "../src/llm/factory.js";
+import { resetEvalState } from "../src/eval/reset-state.js";
 import type { LlmClient } from "../src/llm/client.js";
 
 const configName = process.env.EVAL_CONFIG === "A" ? "A" : "B";
@@ -51,10 +52,20 @@ try {
 const totalEpisodes = scenarioCount * seeds.length * (llmClient ? 5 : 4);
 console.error(
   `[eval] config=${config.name} scenarios=${scenarioCount} seeds=${seeds.join(",")} -> ${totalEpisodes} episodes` +
-    (llmClient ? ` (salvage-agent may call the LLM up to ~3x per episode, throttled to Gemini's free-tier ~24 RPM — a full 120x3 run takes a while; see PROGRESS.md block 8)` : ""),
+    (llmClient ? ` (salvage-agent may call the LLM up to ~3x per episode; a full 120x3 run takes a while — see PROGRESS.md block 8/11 for per-provider timing)` : ""),
 );
 
 const db = makeEvalDb(dbPath);
+
+// Every run starts from clean policy state but keeps the committed LLM cache
+// — without this, P10's system-wide execution cap counts the PREVIOUS run's
+// executions and starves this one into an all-zeros table. See
+// src/eval/reset-state.ts for the full story; this is not a hypothetical.
+const reset = resetEvalState(db);
+console.error(
+  `[eval] reset policy state: cleared ${reset.clearedRows} rows from prior runs, kept ${reset.cachedResponsesKept} cached LLM responses`,
+);
+
 const startedAt = Date.now();
 let completed = 0;
 

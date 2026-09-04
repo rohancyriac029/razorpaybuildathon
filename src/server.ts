@@ -5,6 +5,7 @@
 // it needs somewhere to fetch real data from, and this server already has
 // the DB connection.
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import Fastify from "fastify";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { db as defaultDb } from "./db/client.js";
@@ -148,7 +149,26 @@ export function buildServer(
   return app;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `file://${process.argv[1]}` is the common form of this idiom and it is
+// WRONG on Windows: import.meta.url is `file:///D:/razorpay/src/server.ts`
+// while process.argv[1] is `D:\razorpay\src\server.ts`, so the comparison is
+// always false and `npm run dev` silently starts nothing, exiting 0 with no
+// output. Found in block 11 while seeding the demo — the README tells a
+// reviewer to run exactly this. node:url's pathToFileURL does the drive-letter
+// and separator normalisation properly on every platform.
+if (import.meta.url === pathToFileURL(process.argv[1]!).href) {
+  // Load .env, exactly as eval/run.ts and scripts/backfill.ts already do.
+  // This entrypoint was missing it — a second bug hidden behind the first:
+  // with the guard broken, this block never ran, so nothing ever revealed
+  // that `npm run dev` cannot read RAZORPAY_KEY_ID from .env and dies on
+  // "`key_id` or `oauthToken` is mandatory". Both found in block 11.
+  try {
+    const { existsSync } = await import("node:fs");
+    if (existsSync(".env")) process.loadEnvFile(".env");
+  } catch {
+    // no .env — fall through to whatever is already in the environment
+  }
+
   // Production wiring, constructed once at startup. AgentStrategy is
   // primary; RulesStrategy is both the eval's ablation baseline (block 5)
   // and, unchanged, this strategy's fallback on a malformed/timed-out/down
