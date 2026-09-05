@@ -117,7 +117,7 @@
 <main id="tab-decisions" class="active">
   <div id="demo-request" class="panel">
     <strong>Run a recovery request</strong>
-    <div class="muted" style="margin:4px 0 12px">Submit a simulated payment failure through the live agent and policy backend. No Razorpay call or customer message is sent.</div>
+    <div id="demo-description" class="muted" style="margin:4px 0 12px">Submit a payment failure through the live agent and policy backend. Simulated mode makes no Razorpay call or customer message.</div>
     <form id="demo-form">
       <label>Failure reason
         <select id="demo-reason">
@@ -130,6 +130,12 @@
       </label>
       <label>Amount (INR)
         <input id="demo-amount" type="number" min="1" step="1" value="499" />
+      </label>
+      <label>Execution mode
+        <select id="demo-mode">
+          <option value="simulated">Simulated</option>
+          <option value="razorpay-test">Razorpay test mode</option>
+        </select>
       </label>
       <button id="demo-submit" type="submit">Analyze request</button>
     </form>
@@ -237,11 +243,15 @@ document.getElementById("demo-form").onsubmit = async (event) => {
   const button = document.getElementById("demo-submit");
   const result = document.getElementById("demo-result");
   button.disabled = true;
-  result.textContent = "Agent is analyzing the request...";
+  const mode = document.getElementById("demo-mode").value;
+  result.textContent = mode === "razorpay-test"
+    ? "Creating a Razorpay test order, then running the agent and policy..."
+    : "Agent is analyzing the request...";
   try {
     const data = await API.demoRecovery({
       errorReason: document.getElementById("demo-reason").value,
       amountPaise: Math.round(Number(document.getElementById("demo-amount").value) * 100),
+      mode: document.getElementById("demo-mode").value,
     });
     result.textContent = "Decision recorded. Select the new order below to inspect the proposal, rule, and simulated execution.";
     await loadOrders();
@@ -251,6 +261,13 @@ document.getElementById("demo-form").onsubmit = async (event) => {
   } finally {
     button.disabled = false;
   }
+};
+
+document.getElementById("demo-mode").onchange = (event) => {
+  const live = event.target.value === "razorpay-test";
+  document.getElementById("demo-description").textContent = live
+    ? "Creates a real Razorpay test-mode order and payment link if approved. Notifications remain disabled; no live customer is charged."
+    : "Submit a payment failure through the live agent and policy backend. Simulated mode makes no Razorpay call or customer message.";
 };
 
 // --- Eval tab -----------------------------------------------------------

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type Razorpay from "razorpay";
 import * as schema from "../db/schema.js";
 import { dedupeAndStore, processPaymentFailed } from "../webhooks/handler.js";
 import type { PaymentFailedPayload } from "../webhooks/events.js";
@@ -11,6 +12,7 @@ import type { PolicyEngine } from "../ports/policy-engine.js";
 import type { World } from "../ports/world.js";
 import type { ExecResult, Intent, Order } from "../types.js";
 import { makeEpisodeLogger } from "../persistence/episode-logger.js";
+import { RazorpayWorld } from "../world/razorpay-world.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 
@@ -102,5 +104,46 @@ export async function runDemoRecoveryRequest(
   const context = assembleEpisodeContext(db, processed.orderId, now);
   await run(strategy, scheduler, world, policy, context, log);
 
+  return processed.orderId;
+}
+
+export async function runLiveDemoRecoveryRequest(
+  db: Db,
+  rzp: Razorpay,
+  strategy: Strategy,
+  policy: PolicyEngine,
+  input: { errorReason: string; amountPaise: number },
+): Promise<string> {
+  const rzpOrder = await rzp.orders.create({ amount: input.amountPaise, currency: "INR", notes: { salvage_demo: "recovery" } });
+  const now = new Date();
+  const eventId = `evt_demo_live_${randomUUID()}`;
+  const paymentId = `pay_demo_live_${randomUUID().slice(0, 8)}`;
+  const payload: PaymentFailedPayload = {
+    event: "payment.failed",
+    created_at: Math.floor(now.getTime() / 1000),
+    payload: {
+      payment: {
+        entity: {
+          id: paymentId,
+          order_id: rzpOrder.id,
+          amount: input.amountPaise,
+          currency: "INR",
+          error_code: input.errorReason,
+          error_description: input.errorReason,
+          error_source: "gateway",
+          error_step: "payment_authentication",
+          error_reason: input.errorReason,
+          customer_id: `cust_demo_live_${rzpOrder.id}`,
+        },
+      },
+    },
+  };
+
+  dedupeAndStore(db, eventId, "payment.failed", payload, now.toISOString());
+  const processed = processPaymentFailed(db, eventId, payload, now.toISOString());
+  const context = assembleEpisodeContext(db, processed.orderId, now);
+  const log = makeEpisodeLogger(db, strategy.name, null);
+  const world = new RazorpayWorld(rzp, db);
+  await run(strategy, { now: () => now }, world, policy, context, log);
   return processed.orderId;
 }

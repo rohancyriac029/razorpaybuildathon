@@ -114,7 +114,7 @@ The dashboard has two views:
 - **Decisions:** production-style audit chains, including a normal recovery, a terminal failure rejected by P3, and a payment-status race caught by P8.
 - **Eval scoreboard:** the committed pilot results above.
 
-The Decisions view also includes **Run a recovery request**. Choose a failure reason and amount, submit it, and watch the configured agent classify the request, propose an action, pass through the policy engine, and record a simulated execution result. This browser-triggered path uses the real backend pipeline but does not call Razorpay or send a customer message.
+The Decisions view also includes **Run a recovery request**. Choose a failure reason, amount, and execution mode, then watch the configured agent classify the request, propose an action, pass through the policy engine, and record the result. **Simulated** mode uses the real backend pipeline without external side effects. **Razorpay test mode** creates a real test-mode order and creates a real test payment link only when the policy approves a `PAYMENT_LINK`; notifications are disabled and no live customer is charged.
 
 The demo preparation command seeds the decision chains through the real pipeline and copies the committed pilot results into the local dashboard database. The SQLite files are demo/evaluation fixtures, not production data.
 
