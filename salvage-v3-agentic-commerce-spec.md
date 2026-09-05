@@ -128,7 +128,24 @@ export interface BuyerMandate {
 }
 ```
 
-`PLAN-ENT` at ₹7,500 sits **above** the default P9 ceiling (₹5,000 / `500000` paise) — that is the mandate-breach beat. `ADDON-OOS` is out of stock — that is the P8 recheck beat.
+`PLAN-ENT` at ₹7,500 sits **above** the default P9 ceiling (₹5,000 / `500000` paise) — that is the mandate-breach beat. `ADDON-OOS` is out of stock — that is the pre-execution catalog beat.
+
+### Precondition: the order row must exist before `decidePurchase()`
+
+Verified from `src/db/schema.ts`: `orders.customerId` is **NOT NULL** with an FK to `customers.id`, and `orders.razorpayOrderId` is **NOT NULL UNIQUE**. And P9 gates on `ctx.order.amount`. So the order must be created, with the catalog price already on it, *before* gating.
+
+`src/commerce/create-purchase-order.ts`:
+
+```ts
+export async function createPurchaseOrder(db, rzp, buyerId: string, sku: string, qty: number): Promise<Order>
+// 1. upsert a customers row for buyerId (reuse the pattern in src/webhooks/handler.ts)
+// 2. amount = priceOf(sku) * qty      <- from catalog, NEVER from the model
+// 3. create a REAL Razorpay order (rzp.orders.create) -> razorpayOrderId
+// 4. insert the orders row, status "created"
+// 5. return it
+```
+
+**Why this ordering is the point, not an implementation detail:** the amount reaching the policy engine comes from the catalog, never from the LLM. That is what makes P6/P14 structurally true for purchases, exactly as it is for recovery. Say this out loud in the demo.
 
 ---
 
@@ -148,11 +165,12 @@ The whole point is that **the existing engine gates purchases with no new safety
 | **P6/P14** amount integrity | executor reads amount from order | **executor reads price from catalog** | extend check |
 | **P9** value ceiling | ≥₹5,000 → ESCALATE | **buyer exceeds mandate → ESCALATE** ← the demo beat | none |
 | **P10** global caps | runaway backfill | runaway buyer agent | none |
-| **P8** live recheck | order already paid → skip | **item out of stock / order already paid → skip** | extend `World` |
+| **P8** live recheck | order already paid → skip | order already paid → skip | done in `execute-purchase.ts` (see Change 3) |
+| *(new, not P8)* | — | item out of stock → skip | new catalog check — label it as new, not a P-rule |
 
-### The one required engine change
+### The engine changes — verified against the code, not assumed
 
-`PolicyContext.failure` must become nullable, because a purchase has no failure:
+**Change 1 — `PolicyContext.failure` becomes nullable.** A purchase has no failure:
 
 ```ts
 export interface PolicyContext {
@@ -162,7 +180,7 @@ export interface PolicyContext {
 }
 ```
 
-Then in `src/policy/rules.ts`, guard the two rules that read it:
+Guard the two rules in `src/policy/rules.ts` that read it:
 
 ```ts
 // P3
@@ -175,7 +193,59 @@ if (ctx.failure) {
 }
 ```
 
-**Run the full suite after this change.** All 190 tests must still pass — the recovery path always passes a non-null failure, so nothing should move. If anything breaks, the nullable change is wrong; fix it rather than editing tests.
+**Run the full suite after this.** All 190 tests must still pass — the recovery path always passes a non-null failure, so nothing should move. If anything breaks, the change is wrong; fix it rather than editing tests.
+
+### Change 2 — do NOT reuse `decide()`. Write `decidePurchase()`.
+
+**This was the blocking hole in the first draft of this spec.** Reusing `decide()` is impossible without lying in the audit trail. Verified:
+
+```ts
+export interface Strategy { propose(ctx: EpisodeContext): Promise<Proposal>; }
+export interface EpisodeContext { failureContext: FailureContext; history; now; }
+export interface FailureContext { order: Order; failure: FailureEvent; ... }  // NOT nullable
+```
+
+`decide()` takes `EpisodeContext` too. So a buyer would have to fabricate a fake `FailureEvent` to use either. Making `FailureContext.failure` nullable would ripple into `src/agent/tools.ts`, `src/context/assemble.ts` and the eval — i.e. it un-freezes recovery, which §0 forbids.
+
+**Resolution:** `BuyerAgent` does **not** implement `Strategy`. Write a parallel entry point in `src/commerce/decide-purchase.ts`:
+
+```ts
+export interface BuyerContext {
+  order: Order;            // already created, amount from catalog
+  mandate: BuyerMandate;
+  catalog: CatalogItem[];
+  spentSoFarPaise: number;
+  now: Date;
+}
+
+export async function decidePurchase(
+  agent: BuyerAgent,
+  policyEngine: PolicyEngine,
+  ctx: BuyerContext,
+  log: EpisodeLogger,
+): Promise<DecisionResult>
+```
+
+It mirrors `decide()`'s ~30 lines: `hashContext` → `agent.propose(ctx)` → `policyEngine.decide(proposal, {order: ctx.order, failure: null, now: ctx.now})` → apply MODIFY → map verdict to outcome → `log(...)` → return `{proposal, verdict, intentId, contextHash}`.
+
+**What this buys:** the *policy engine* — the part that matters — is reused byte-for-byte and stays under its existing 42 tests. Only the thin orchestration is duplicated. Recovery is never touched.
+
+**Validated assumption (checked, don't re-check):** `src/policy/gather-snapshot.ts` never reads the `failures` table, so `gatherSnapshot` works unchanged for purchases.
+
+### Change 3 — execution, and the P8 recheck
+
+`executeApproved()` in `src/run.ts` has no `PURCHASE` branch, and it is frozen. So `src/commerce/execute-purchase.ts` owns execution — **and must therefore perform the P8 recheck itself**, or the "every money action gated" claim has a hole:
+
+```ts
+// P8 equivalent, done explicitly because run.ts is frozen:
+const live = await world.getOrder(intent.orderId);
+if (live.status === "paid") return { ok: false, detail: "P8 recheck: order already paid, execution skipped", ... };
+// Stock is NOT an order status — this is a separate catalog check, do not call it P8:
+const item = getItem(proposal.sku);
+if (!item.inStock) return { ok: false, detail: "pre-execution catalog check: item out of stock", ... };
+```
+
+Label these honestly in the audit trail and the demo. The out-of-stock check is **new logic**, not P8.
 
 ### Mandate enforcement
 
@@ -196,7 +266,9 @@ That way a mandate breach produces the existing P9 `MODIFY → ESCALATE` verdict
 | `catalog.json` | as §3 |
 | `src/commerce/catalog.ts` | `loadCatalog()`, `getItem(sku)`, `priceOf(sku)`. Pure, no I/O beyond one read. |
 | `src/commerce/buyer-tools.ts` | Zod-validated tools: `searchCatalog`, `getMandate`, `proposePurchase`. Mirror the shape of `src/agent/tools.ts` — refuse malformed input with a message fed back to the model, never throw. **`proposePurchase` must reject any attempt to pass a price/amount/discount field** (reuse `isPriceBearingVar` from `src/messaging/templates.ts`). |
-| `src/commerce/buyer-agent.ts` | `BuyerAgent implements Strategy`-shaped class. Multi-turn loop modelled on `src/agent/agent-strategy.ts`, including `lastFellBackToRules` + `lastUsage` fields. Fallback: on any LLM error, propose nothing and escalate (a buyer that can't think must not spend). |
+| `src/commerce/buyer-agent.ts` | `BuyerAgent` — **does NOT implement `Strategy`** (see Change 2); it takes a `BuyerContext`. Multi-turn loop modelled on `src/agent/agent-strategy.ts`, including a `lastFellBackToRules`-style flag and `lastUsage`. Fallback: on any LLM error, propose nothing and **escalate** — a buyer that cannot think must not spend. (Note the deliberate asymmetry with recovery, which falls back to a rules proposal: there is no safe default purchase.) |
+| `src/commerce/decide-purchase.ts` | `decidePurchase()` — the parallel gate entry point (Change 2) |
+| `src/commerce/create-purchase-order.ts` | order/customer precondition (§3) |
 | `src/commerce/buyer-system-prompt.ts` | System prompt. **Must state the mandate is enforced externally and the agent has no price authority.** No generator params (no eval here, but keep the discipline). |
 | `src/commerce/execute-purchase.ts` | Turns an approved `PurchaseProposal` into a real Razorpay order + payment link via the existing `RazorpayWorld`. Reads price from catalog. |
 | `scripts/seed-buyer-demo.ts` | Runs the three beats below through the **real** pipeline (mirror `scripts/seed-demo.ts`). Add `"seed:buyer": "tsx scripts/seed-buyer-demo.ts"` to package.json. |
@@ -215,20 +287,33 @@ That way a mandate breach produces the existing P9 `MODIFY → ESCALATE` verdict
 
 ## 6. Build order (time-boxed — cut from the bottom)
 
-| # | Step | Est | Cut if short? |
-|---|---|---|---|
-| 1 | `catalog.json` + `src/commerce/catalog.ts` + `GET /api/catalog` | 30m | **no** |
-| 2 | `PurchaseProposal` type + nullable `failure` + `EXECUTION_BOUND` — **run all 190 tests** | 45m | **no** |
-| 3 | `execute-purchase.ts` (catalog price → Razorpay order + link) | 45m | **no** |
-| 4 | `buyer-tools.ts` + `buyer-system-prompt.ts` + `buyer-agent.ts` | 1h30 | **no** |
-| 5 | `scripts/seed-buyer-demo.ts` — the 3 beats, run for real | 45m | **no** |
-| 6 | `test/commerce-buyer.test.ts` | 45m | no — but trim to the 4 core cases |
-| 7 | README repositioning (§8) | 45m | **no** — this is what makes it a Track A entry |
-| 8 | DEMO.md buyer beats | 20m | shorten |
-| 9 | Live Razorpay purchase (real order + real link) | 20m | yes → use the stub world, say so |
-| 10 | Polish the HTML page for purchases | 30m | **yes, first to go** |
+Two tiers. **Tier 1 is the submission** and must fit in ~3h30. Tier 2 is upside, attempted only if Tier 1 is committed and green.
 
-**Hard rule: stop at the 4-hour mark and spend the rest on README + demo + commit.** A working buyer surface with a great README beats a polished one nobody can follow.
+**Tier 1 — the minimum shippable Track A entry (~3h30)**
+
+| # | Step | Est |
+|---|---|---|
+| 1 | `catalog.json` + `src/commerce/catalog.ts` + `GET /api/catalog` | 25m |
+| 2 | `PurchaseProposal` type, nullable `PolicyContext.failure`, `EXECUTION_BOUND` — **run all 190 tests** | 30m |
+| 3 | `create-purchase-order.ts` (§3 precondition) | 25m |
+| 4 | `decide-purchase.ts` (Change 2) | 25m |
+| 5 | `buyer-tools.ts` + `buyer-system-prompt.ts` + `buyer-agent.ts` | 1h15 |
+| 6 | `execute-purchase.ts` incl. the P8 recheck (Change 3) | 20m |
+| 7 | `scripts/seed-buyer-demo.ts` — 3 beats, **run for real** | 30m |
+
+**Commit here.** At this point the submission is complete and defensible even if everything below is skipped.
+
+**Tier 2 — upside, in strict priority order**
+
+| # | Step | Est | Notes |
+|---|---|---|---|
+| 8 | README repositioning (§8) | 45m | Highest value in Tier 2 — do this first |
+| 9 | `test/commerce-buyer.test.ts` — the 4 core cases | 40m | |
+| 10 | DEMO.md buyer beats | 20m | |
+| 11 | Live Razorpay purchase against the real API | 20m | else use the stub and say so |
+| 12 | HTML page polish for purchases | 30m | first to drop |
+
+**Hard rule: if Tier 1 is not green at the 4-hour mark, stop and fall back to §11.** A working buyer surface with a rough README beats a polished half-built one.
 
 ---
 
