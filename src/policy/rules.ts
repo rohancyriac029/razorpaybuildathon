@@ -43,10 +43,16 @@ export const DEFAULT_POLICY_CONFIG: PolicyConfig = {
 // them would just make triage impossible during an incident for no safety
 // benefit (documented explicitly for P13 below, applies identically to the
 // rest).
+// PURCHASE added for the v3 agentic-commerce surface (spec §4): a purchase
+// moves money exactly like a recovery execution does, so it must be subject
+// to every rule this set gates (P1/P2/P13/P9/P10). It is NOT added to
+// CUSTOMER_FACING below — a purchase isn't an outbound contact, so P4
+// blackout hours and P5 contact caps correctly don't apply to it.
 const EXECUTION_BOUND: ReadonlySet<Proposal["type"]> = new Set([
   "TOKEN_RETRY",
   "PAYMENT_LINK",
   "NUDGE",
+  "PURCHASE",
 ]);
 const CUSTOMER_FACING: ReadonlySet<Proposal["type"]> = new Set(["PAYMENT_LINK", "NUDGE"]);
 
@@ -64,7 +70,9 @@ function proposalSendAt(p: Proposal): Date | null {
 
 export function evaluateProposal(
   proposal: Proposal,
-  ctx: { order: Order; failure: FailureEvent; now: Date },
+  // failure is null for a PURCHASE proposal (v3, spec §4 Change 1) — P3 and
+  // P11 below guard for it explicitly; every other rule never reads it.
+  ctx: { order: Order; failure: FailureEvent | null; now: Date },
   snapshot: PolicySnapshot,
   config: PolicyConfig,
 ): PolicyVerdict {
@@ -94,7 +102,8 @@ export function evaluateProposal(
   // --- P3: TERMINAL -> automatic reject. -----------------------------------
   // The failure's own taxonomy category wins regardless of what the model
   // proposed. This is the rule the whole demo hinges on (spec §5.5, §8).
-  if (ctx.failure.category === "TERMINAL") {
+  // Guarded for null: a PURCHASE has no failure, so this never fires for one.
+  if (ctx.failure && ctx.failure.category === "TERMINAL") {
     return reject("P3", "failure is classified TERMINAL — never retry or contact");
   }
 
@@ -112,13 +121,16 @@ export function evaluateProposal(
   }
 
   // --- P11: staleness cutoff. ----------------------------------------------
-  const failureAgeDays =
-    (ctx.now.getTime() - new Date(ctx.failure.occurredAt).getTime()) / 86_400_000;
-  if (failureAgeDays > config.stalenessCutoffDays) {
-    return reject(
-      "P11",
-      `failure is ${failureAgeDays.toFixed(1)} days old (cutoff ${config.stalenessCutoffDays}) — refusing to act on stale data`,
-    );
+  // Guarded for null: a PURCHASE has no failure to go stale.
+  if (ctx.failure) {
+    const failureAgeDays =
+      (ctx.now.getTime() - new Date(ctx.failure.occurredAt).getTime()) / 86_400_000;
+    if (failureAgeDays > config.stalenessCutoffDays) {
+      return reject(
+        "P11",
+        `failure is ${failureAgeDays.toFixed(1)} days old (cutoff ${config.stalenessCutoffDays}) — refusing to act on stale data`,
+      );
+    }
   }
 
   // --- P4: no customer contact 22:00–08:00 IST. -----------------------------

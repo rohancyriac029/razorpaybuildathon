@@ -23,7 +23,12 @@ import type { PolicySnapshot } from "./snapshot.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 
-const EXECUTION_BOUND = new Set<Proposal["type"]>(["TOKEN_RETRY", "PAYMENT_LINK", "NUDGE"]);
+// Kept in sync with rules.ts's own EXECUTION_BOUND (duplicated rather than
+// imported so this file's only import stays Drizzle-free reasoning intact —
+// see the module doc). v3 agentic-commerce: PURCHASE added here too, or
+// P1/P10's counters would silently undercount purchases (a fresh buyer
+// would never hit its own attempt/rate caps).
+const EXECUTION_BOUND = new Set<Proposal["type"]>(["TOKEN_RETRY", "PAYMENT_LINK", "NUDGE", "PURCHASE"]);
 const CUSTOMER_FACING = new Set<Proposal["type"]>(["PAYMENT_LINK", "NUDGE"]);
 
 function wasReallyExecuted(execResult: unknown): boolean {

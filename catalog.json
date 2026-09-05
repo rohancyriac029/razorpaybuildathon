@@ -1,0 +1,10 @@
+{
+  "currency": "INR",
+  "items": [
+    { "sku": "PLAN-BASIC",  "name": "Basic plan",    "pricePaise": 49900,  "category": "subscription", "inStock": true },
+    { "sku": "PLAN-PRO",    "name": "Pro plan",      "pricePaise": 199900, "category": "subscription", "inStock": true },
+    { "sku": "ADDON-SEATS", "name": "5 extra seats", "pricePaise": 99900,  "category": "addon",        "inStock": true },
+    { "sku": "PLAN-ENT",    "name": "Enterprise",    "pricePaise": 750000, "category": "subscription", "inStock": true },
+    { "sku": "ADDON-OOS",   "name": "Legacy addon",  "pricePaise": 29900,  "category": "addon",        "inStock": false }
+  ]
+}

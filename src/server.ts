@@ -22,6 +22,7 @@ import {
 } from "./webhooks/handler.js";
 import { listOrdersWithEpisodes, getDecisionChain } from "./audit/decision-chain.js";
 import { latestRunReport } from "./eval/latest-run-report.js";
+import { loadCatalog } from "./commerce/catalog.js";
 
 /**
  * db is injectable so tests can run the real Fastify request lifecycle
@@ -79,6 +80,10 @@ export function buildServer(
   });
 
   app.get("/api/eval/latest", async () => latestRunReport(db));
+
+  // v3 agentic-commerce (spec: "Agent-readable catalog" — Track A example
+  // direction). Read-only, no auth, same posture as the routes above.
+  app.get("/api/catalog", async () => loadCatalog());
 
   app.post("/webhooks/razorpay", async (req, reply) => {
     const rawBody = (req as unknown as { rawBody: string }).rawBody ?? "";

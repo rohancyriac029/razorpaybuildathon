@@ -132,12 +132,51 @@ export interface EscalateProposal extends ProposalBase {
   explanation: string;
 }
 
+// v3 agentic-commerce surface (salvage-v3-agentic-commerce-spec.md §3).
+// Deliberately NO price/amount field — same discipline as every other
+// execution-bound proposal (P6/P14): the executor reads price from the
+// catalog, never from the model. This is schema-level, not a policy check.
+export interface PurchaseProposal extends ProposalBase {
+  type: "PURCHASE";
+  sku: string; // must match a catalog entry
+  quantity: number; // integer >= 1
+}
+
 export type Proposal =
   | TokenRetryProposal
   | PaymentLinkProposal
   | NudgeProposal
   | MarkTerminalProposal
-  | EscalateProposal;
+  | EscalateProposal
+  | PurchaseProposal;
+
+// --- Commerce (v3) -----------------------------------------------------------
+// Buyer-side domain vocabulary. Deliberately separate from FailureContext /
+// EpisodeContext (see spec §4 Change 2): Strategy.propose() and decide()
+// both require a non-null FailureEvent, and a purchase has no failure.
+// Reusing them would mean fabricating a fake failure to satisfy the type —
+// a lie in the audit trail. BuyerAgent and decidePurchase() use this
+// parallel, smaller context instead; the POLICY ENGINE itself is untouched
+// and reused byte-for-byte.
+
+export interface BuyerMandate {
+  buyerId: string;
+  maxPerOrderPaise: number; // per-purchase ceiling — enforced via P9, see spec §4
+  maxTotalPaise: number; // lifetime budget for this mandate
+  allowedCategories: string[]; // catalog categories this buyer may transact in
+}
+
+// Passed to a BuyerAgent on every invocation — the PURCHASE analog of
+// EpisodeContext. `order` must already exist (createPurchaseOrder), amount
+// sourced from the catalog before the buyer ever runs.
+export interface BuyerContext {
+  order: Order;
+  mandate: BuyerMandate;
+  spentSoFarPaise: number;
+  now: Date;
+  /** What the buyer is shopping for, in plain language — e.g. "the buyer wants to upgrade to the Enterprise plan." Without this the agent has no basis to choose between catalog items; it is not a price or sku, just intent. */
+  intent: string;
+}
 
 // --- Policy engine -----------------------------------------------------------
 
