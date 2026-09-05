@@ -32,7 +32,10 @@ class DemoScheduler {
 
 /** A no-network World for browser demos. It exercises the same execution boundary without creating Razorpay objects or contacting customers. */
 class DemoWorld implements World {
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly customerPays: boolean,
+  ) {}
 
   async getOrder(id: string): Promise<Order> {
     const row = this.db.select().from(schema.orders).where(eq(schema.orders.id, id)).get();
@@ -53,11 +56,14 @@ class DemoWorld implements World {
   }
 
   private accept(intent: Intent, detail: string): ExecResult {
+    if (this.customerPays) {
+      this.db.update(schema.orders).set({ status: "paid" }).where(eq(schema.orders.id, intent.orderId)).run();
+    }
     return {
       intentId: intent.id,
       ok: true,
       razorpayRefId: null,
-      detail,
+      detail: this.customerPays ? `${detail}; simulated customer paid` : `${detail}; simulated customer did not pay (yet)`,
       executedAt: new Date().toISOString(),
     };
   }
@@ -67,7 +73,7 @@ export async function runDemoRecoveryRequest(
   db: Db,
   strategy: Strategy,
   policy: PolicyEngine,
-  input: { errorReason: string; amountPaise: number },
+  input: { errorReason: string; amountPaise: number; simulatedOutcome?: "paid" | "pending" },
 ): Promise<string> {
   const now = new Date();
   const orderId = `order_demo_request_${randomUUID().slice(0, 8)}`;
@@ -97,12 +103,15 @@ export async function runDemoRecoveryRequest(
   dedupeAndStore(db, eventId, "payment.failed", payload, now.toISOString());
   const processed = processPaymentFailed(db, eventId, payload, now.toISOString());
   const scheduler = new DemoScheduler(now);
-  const world = new DemoWorld(db);
+  const world = new DemoWorld(db, input.simulatedOutcome === "paid");
   const log = makeEpisodeLogger(db, strategy.name, null);
   scheduler.onFire(async () => undefined);
 
   const context = assembleEpisodeContext(db, processed.orderId, now);
   await run(strategy, scheduler, world, policy, context, log);
+  if (input.simulatedOutcome === "paid") {
+    db.update(schema.episodes).set({ outcome: "recovered" }).where(eq(schema.episodes.orderId, processed.orderId)).run();
+  }
 
   return processed.orderId;
 }

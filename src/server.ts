@@ -39,7 +39,7 @@ import { loadCatalog } from "./commerce/catalog.js";
 export function buildServer(
   db: BetterSQLite3Database<typeof schema> = defaultDb,
   onPaymentFailed: (db: BetterSQLite3Database<typeof schema>, orderId: string) => Promise<void> = async () => {},
-  onDemoRecovery: ((input: { errorReason: string; amountPaise: number; mode: "simulated" | "razorpay-test" }) => Promise<string>) | null = null,
+  onDemoRecovery: ((input: { errorReason: string; amountPaise: number; mode: "simulated" | "razorpay-test"; simulatedOutcome?: "paid" | "pending" }) => Promise<string>) | null = null,
 ) {
   const app = Fastify({ logger: process.env.VITEST !== "true" });
 
@@ -86,7 +86,7 @@ export function buildServer(
   // direction). Read-only, no auth, same posture as the routes above.
   app.get("/api/catalog", async () => loadCatalog());
 
-  app.post<{ Body: { errorReason?: string; amountPaise?: number; mode?: "simulated" | "razorpay-test" } }>("/api/demo/recovery", async (req, reply) => {
+  app.post<{ Body: { errorReason?: string; amountPaise?: number; mode?: "simulated" | "razorpay-test"; simulatedOutcome?: "paid" | "pending" } }>("/api/demo/recovery", async (req, reply) => {
     if (!onDemoRecovery) return reply.code(503).send({ error: "demo recovery is not configured" });
     const errorReason = String(req.body?.errorReason ?? "card_declined").trim();
     const amountPaise = Number(req.body?.amountPaise ?? 49900);
@@ -95,7 +95,8 @@ export function buildServer(
       return reply.code(400).send({ error: "errorReason and a positive integer amountPaise are required" });
     }
     try {
-      const orderId = await onDemoRecovery({ errorReason, amountPaise, mode });
+      const simulatedOutcome = req.body?.simulatedOutcome === "paid" ? "paid" : "pending";
+      const orderId = await onDemoRecovery({ errorReason, amountPaise, mode, simulatedOutcome });
       return { orderId, chain: getDecisionChain(db, orderId) };
     } catch (err) {
       req.log.error({ err }, "demo recovery request failed");
