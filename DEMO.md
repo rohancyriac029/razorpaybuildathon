@@ -1,28 +1,49 @@
-# Demo runbook — 5 minutes
+# Demo runbook — ~6:30
 
-Spec §8's beat table, with the exact commands, the exact things to say, and — deliberately — the places where the honest answer is "that didn't happen." Rehearse twice.
+Spec §8's beat table (recovery) plus the v3 commerce beats (spec §9), with the exact commands, the exact things to say, and — deliberately — the places where the honest answer is "that didn't happen." Rehearse twice.
 
 ## Before you start (2 minutes, do it every time)
 
 ```bash
 npm run db:push                # fresh dev schema
-npx tsx scripts/seed-demo.ts   # seeds §8's beats through the REAL pipeline
+npx tsx scripts/seed-demo.ts        # seeds §8's recovery beats through the REAL pipeline
+npx tsx scripts/seed-buyer-demo.ts  # seeds §9's commerce beats through the REAL pipeline (real Razorpay + real LLM)
 npm run dev                    # server on :3000
 ```
 
-Open **http://localhost:3000**. You should see three orders. Verify all three are there before you present — if `seed-demo` prints "already seeded (deduped)", the database already has them and you're fine.
+Open **http://localhost:3000**. You should see three recovery orders plus three buyer orders. Verify all six are there before you present — if a seed script prints "already seeded (deduped)", the database already has them and you're fine.
 
-> **What `seed-demo.ts` is and isn't.** It does not insert fabricated rows. It feeds real `payment.failed` payloads through the real taxonomy classifier, the real `RulesPolicyEngine`, and the real `decide()`/`executeApproved()` pipeline — the same functions production runs. The verdicts on screen were genuinely decided, not typed in. Say this if asked; it's the difference between a demo and a mockup.
+> **What both seed scripts are and aren't.** Neither inserts fabricated rows. `seed-demo.ts` feeds real `payment.failed` payloads through the real taxonomy classifier and the real `decide()`/`executeApproved()` pipeline; `seed-buyer-demo.ts` runs a real Gemini-backed `BuyerAgent` through real `createPurchaseOrder`/`decidePurchase`/`executePurchase` against the real Razorpay test API. The verdicts on screen were genuinely decided, not typed in. Say this if asked; it's the difference between a demo and a mockup.
 
-**If you have a tunnel + browser and want the fully live version** of the 0:30–1:30 beat instead of the seeded one, see README §6's recipe (cloudflared → dashboard webhook → test card). It needs a browser because Razorpay test mode has no headless failure trigger — that's README §4, and it's worth saying out loud rather than hiding.
+**If you have a tunnel + browser and want the fully live version** of the recovery beat instead of the seeded one, see README §6's recipe (cloudflared → dashboard webhook → test card). It needs a browser because Razorpay test mode has no headless failure trigger — that's README §4, and it's worth saying out loud rather than hiding.
 
 ---
 
-## 0:00–0:30 — The problem, one number
+## 0:00–0:30 — The problem, one line
 
-> "20–40% of SaaS churn is involuntary — payments that fail silently. Razorpay already retries a subscription charge and gives up after four. What happens *after* that is the merchant's problem, and it's the window this lives in."
+> "Agents are starting to move real money without a human confirming each step. Razorpay's own Agent Studio demo showed why that's dangerous unsupervised: an abandoned-cart agent offered a ₹500 discount, then **doubled it** when that didn't convert — live, on stage. The question isn't whether an agent can transact. It's who bounds it."
 
-## 0:30–1:30 — A normal recovery
+## 0:30–2:00 — The buyer agent, and the money beat
+
+Open the catalog first: `curl localhost:3000/api/catalog` — *"the merchant is agent-readable."*
+
+> "This is a buyer agent with a spending mandate — ₹5,000 per purchase. It doesn't enforce that itself. A deterministic policy engine does, after it proposes — the same 14-rule engine, no new logic written for this."
+
+Click the **Basic plan** order (the first buyer beat).
+
+> "It wanted the Basic plan, ₹499, well inside mandate. Policy approves — **P0** — and it executes: real Razorpay order, real payment link."
+
+Click the **Enterprise plan** order (the mandate-breach beat — **this is the money beat**).
+
+> "Now it wants Enterprise — ₹7,500. Watch the proposal type change: it proposed a **PURCHASE**, and the verdict is **MODIFY, P9** — the *exact same rule* that caps recovery's auto-execution ceiling. The engine didn't error. It **rewrote** the buyer's proposal into an escalation to a human, and kept the agent's own reasoning attached so you can see what it wanted and why it got overruled.
+>
+> That's my answer to the Agent Studio criticism: the agent that tries to spend past its authority doesn't get a second attempt to try harder. It gets escalated, with a rule id, on the first try."
+
+Click the **out-of-stock** order, quickly.
+
+> "One more safety net, and I'm labelling it honestly: this is *not* P8. P8 checks whether a payment already went through. This checks a catalog fact — is the item even in stock. Policy approved it, execution caught it. Different rule, same discipline: check right before you spend, not just at proposal time."
+
+## 2:00–2:30 — A normal recovery
 
 Click **`order_demo_normal_recovery`**.
 
@@ -32,7 +53,7 @@ Point at `sendAt` being **later than** `proposedAt`.
 
 > "The decision happened now; the link goes out when the strategy chose. Execution is scheduled, not immediate — that split is load-bearing, because the whole eval measures timing quality."
 
-## 1:30–3:00 — The adversarial TERMINAL **(this is the whole demo)**
+## 2:30–4:00 — The adversarial TERMINAL **(this is the recovery half's whole demo)**
 
 Click **`order_demo_terminal_trap`**.
 
@@ -46,7 +67,7 @@ Point at the proposal, then the verdict.
 
 **The point to land:** the LLM is untrusted by construction. The policy engine is a pure function, no model in it, and it is the only thing that decides whether anything reaches a customer.
 
-## 3:00–4:00 — The benchmark
+## 4:00–5:00 — The benchmark
 
 ```bash
 LLM_PROVIDER=ollama OLLAMA_MODEL=qwen2.5:7b EVAL_SCENARIOS=20 EVAL_SEEDS=1 npm run eval
@@ -62,9 +83,9 @@ Then, before anyone asks:
 >
 > Two caveats I'd rather say than be asked. **One:** the oracle is my own generator played perfectly — so 'percent of oracle headroom' measures how well a strategy reverse-engineered *my* world model, not anything about production. **Two:** this is n=20, one seed, not the 120×3 I designed for. Gemini's free tier is 500 requests a day and I burned it; the local model works but needs about six hours for a full run. I'd rather show you a small honest number than a big invented one."
 
-## 4:00–4:30 — No price authority
+## 5:00–5:30 — No price authority, on the recovery side too
 
-> "Razorpay's own Agent Studio demo drew criticism when the abandoned-cart agent offered a ₹500 discount, then doubled it when that didn't convert — price discrimination, dark-pattern concerns. In this system the agent **structurally cannot** discount. The amount isn't policy-checked, it's absent from the schema: no propose tool has an amount parameter, so there is no `Proposal` that can carry a price."
+> "Same discipline you already saw on the buyer agent, other side of the ledger. This one's message-template based — the agent can see a template with a discount variable, and the tool layer refuses it structurally before it ever becomes a proposal. No propose tool has an amount parameter, on either agent, so there is no `Proposal` that can carry a price."
 
 **Be honest about the number:**
 
@@ -77,9 +98,9 @@ KILL_SWITCH=true npm run backfill -- --simulate 30    # 30/30 rejected via P13
 npm run backfill -- --simulate 30 --stale-days 240    # 30/30 rejected via P11
 ```
 
-## 4:30–5:00 — Two more weeks
+## 6:00–6:30 — Two more weeks
 
-README §12. Lead with the two genuinely unfinished things: the `TOKEN_RETRY` path is written and typed against the real SDK but **never run against a live mandate token** (Subscriptions entitlement never arrived), and the full 120×3 eval.
+README §12. Lead with the two genuinely unfinished things across both agents: a real wire protocol (UAP/ACP/AP2/x402) for the buyer's transport instead of an in-process call, and — on the recovery side — the `TOKEN_RETRY` path, written and typed against the real SDK but **never run against a live mandate token** (Subscriptions entitlement never arrived), plus the full 120×3 eval.
 
 ---
 
@@ -111,3 +132,9 @@ Spec §8 wants these available if asked. Ranked by how convincing they are:
 
 **"What's the weakest part?"**
 > Sample size, and I'd say it before you find it. n=20, one seed, one config. The distribution-shift claim (config A → B) is the finding I'd defend in principle, but I only measured the agent on config B — so right now it's a design, not a result.
+
+**"Isn't the buyer agent just recovery with different words?"**
+> No — it's a different agent with a different mandate, gated through a genuinely parallel entry point (`decidePurchase()`, not `decide()`), because `Strategy` requires a non-null failure and a purchase has none. What's shared is the *engine*, deliberately: the buyer's ceiling is recovery's own P9 rule, not a new one. I'd rather defend "the same 14-rule engine holds up under a second, unrelated caller" than pretend I wrote two engines.
+
+**"Is the commerce surface benchmarked like recovery is?"**
+> No, and I'm not going to pretend it is. There's no defensible ground truth for "would this purchase have happened" the way the recovery eval has `wouldSucceed()` — inventing one would undercut the honest-metrics posture the recovery eval earns. It's demonstrated live, with real Razorpay calls and a real model, not benchmarked. Said plainly in README §12, not discovered by a judge.

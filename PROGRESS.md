@@ -494,6 +494,62 @@ Fixed properly rather than documented as a limitation:
 
 ---
 
+# v3 — Agentic Commerce pivot
+
+With <12h left before submission, red-teamed the topic itself: the AI Revenue Recovery track this build targeted has heavy competition. Pivoted to **AI Growth & Agentic Commerce**, per `salvage-v3-agentic-commerce-spec.md` (written, then red-teamed against the actual source before building — see that file's own revision history for four holes the first draft had and how they were fixed). Recovery is **frozen and independently submittable** at commit `2f68dbf` throughout; everything below is additive.
+
+Thesis: **one policy engine, two agents.** A buyer agent that spends a merchant's money against a catalog, and the existing recovery agent — both gated by the identical `PolicyEngine.decide()`, same 14 rules, same audit trail. The buyer's spending mandate is enforced through the *existing* P9 value ceiling (constructing `PolicyConfig` with `valueCeilingPaise = mandate.maxPerOrderPaise`), not a new rule — the highest-value design decision in the pivot, since it makes "the LLM never gets the last word on money" a claim about one proven engine under a second, unrelated caller, not two separate safety stories.
+
+## Tier 1 — buyer surface, verified live end to end ✅ done (2026-09-05)
+
+| File | What |
+|---|---|
+| `catalog.json`, `src/commerce/catalog.ts` | Agent-readable catalog, served at `GET /api/catalog`. 5 items including one over the P9 ceiling (`PLAN-ENT`, ₹7,500) and one out of stock (`ADDON-OOS`) — both deliberate, both demo beats. |
+| `src/commerce/create-purchase-order.ts` | Creates the order row a purchase gates against — **before** the buyer agent runs, priced from the catalog, never from the model. `orders.customerId`/`razorpayOrderId` are both NOT NULL (schema), and P9 reads `order.amount`, so this has to happen first; that ordering is the point, not a detail. |
+| `src/commerce/decide-purchase.ts` | `decidePurchase()` — a parallel ~30-line entry point to `decide()` (`src/run.ts`), **not** a reuse of it. `Strategy.propose()`/`EpisodeContext`/`FailureContext` all require a non-null `FailureEvent`; a purchase has none, and widening that would have un-frozen the eval and every recovery strategy to accommodate one new caller. Reusing `decide()` directly would have meant fabricating a fake failure — a lie in the audit trail. What *is* reused, byte-for-byte, under its existing 42 tests: the policy engine itself, via the same `PolicyEngine` port. |
+| `src/commerce/buyer-agent.ts`, `buyer-tools.ts`, `buyer-system-prompt.ts` | `BuyerAgent` — does **not** implement `Strategy` (see above); takes a `BuyerContext`. Two read tools (`searchCatalog`, `getMandate`), two propose tools (`proposePurchase`, `escalate`). Deliberate asymmetry from `AgentStrategy`: on any LLM error, escalates rather than falling back to a rules-based purchase — there is no safe default purchase the way there's a safe default "wait" for recovery. |
+| `src/commerce/execute-purchase.ts` | `executeApproved()` (`src/run.ts`) has no `PURCHASE` branch and is frozen, so this owns execution and performs the P8-equivalent live recheck itself — plus one genuinely new check (item in stock), explicitly labelled as **not** P8 in the code and everywhere else it's mentioned. P8 checks payment status; this checks a catalog fact. |
+| `scripts/seed-buyer-demo.ts` (`npm run seed:buyer`) | Seeds 3 beats through the real pipeline: normal purchase, mandate breach, out of stock. |
+
+### Two changes to frozen recovery code, both minimal, both verified
+
+1. **`PolicyContext.failure` becomes nullable.** P3 and P11 in `rules.ts` guard for it (`if (ctx.failure && ...)`). **All 190 pre-existing tests still pass, unchanged** — the recovery path always passes non-null, so nothing moved.
+2. **`gather-snapshot.ts`'s own duplicate `EXECUTION_BOUND` set** (a second copy of the set in `rules.ts`, missed in the spec's first draft — caught by red-teaming the spec against the code before writing anything) also needed `PURCHASE` added, or P1/P10's counters would silently undercount purchases — a fresh buyer would never hit its own attempt/rate caps.
+
+### Verified live, not asserted
+
+`npm run seed:buyer` against the real Razorpay test API and a real Gemini-backed `BuyerAgent` produced all three beats exactly as designed:
+
+```
+BEAT 1 — within mandate: proposed PURCHASE (PLAN-BASIC x1) -> APPROVE (P0) -> executed ok=true, real payment link
+BEAT 2 — mandate breach: proposed PURCHASE (PLAN-ENT) -> MODIFY (P9) -> ESCALATE, model's own reasoning preserved through the rewrite
+BEAT 3 — out of stock:   proposed PURCHASE (ADDON-OOS) -> APPROVE (P0) -> executed ok=false, "pre-execution catalog check: out of stock"
+```
+
+All three render correctly on the existing decision-chain page with **zero HTML changes** — the shape is identical to what recovery's own P9 `MODIFY` verdicts already produce.
+
+**One real finding along the way, in the system prompt, not the code:** the first draft told the buyer to self-check stock before proposing (matching how `searchCatalog`'s result includes `inStock`), so it escalated proactively on beat 3 and the `execute-purchase.ts` out-of-stock check never actually fired — the model's own caution pre-empted the beat the demo needed. Softened the prompt so the *system*, not the model's judgment, is what catches the failure — the same pedagogical shape as recovery's TERMINAL-dressed-as-recoverable beat (§8).
+
+## Tier 2 — README, tests, demo ✅ done (2026-09-05)
+
+**README repositioned**, every existing recovery claim kept as evidence rather than removed: new title/thesis (§1–2), a new §9 "Bounded by construction" with real pasted output from the P9 mandate-breach and out-of-stock beats above, a note in §3 on the parallel-gate architecture, and UAP/ACP/AP2/x402 named explicitly as not-built future work (§12) rather than quietly absent.
+
+**`test/commerce-buyer.test.ts`, 6 tests** — mirrors `test/backfill-ingest.test.ts`'s style: real pipeline, fake Razorpay client (no live network in the suite), scripted `FakeLlmClient` (no live model in the suite), asserts on real verdicts. Mandate breach → P9 → ESCALATE; within-mandate purchase approved and executed with the catalog price (not anything the model said) persisted; a smuggled price-bearing field on `proposePurchase` refused before Zod even runs; kill switch; out-of-stock skip explicitly asserted to **not** contain "P8" in its detail string; idempotency.
+
+### A second real bug, pre-existing, found by the idempotency test — not specific to commerce
+
+The idempotency test (call `decidePurchase` twice for the same `(orderId, attemptNumber)` after the first executed) crashed with a raw `SqliteError: UNIQUE constraint failed: intents.idempotency_key` instead of the P7 rejection it should have produced. Root-caused by direct reproduction, not guesswork: `evaluateProposal`'s P7 check *does* correctly compute `REJECT`/`P7` for the duplicate — confirmed by calling `gatherSnapshot()` and `policyEngine.decide()` directly with the exact same inputs and getting the right verdict both times. The crash was one layer further down: `decide()`/`decidePurchase()` never mint an `intentId` for a `REJECT` (it stays `null`), so `episode-logger.ts`'s existing-row lookup (keyed on `intentId`) never finds a match and always falls into the INSERT branch — which unconditionally computes `idempotencyKey(orderId, attemptNumber)` and tries to insert it, colliding with the **already-executed** row that has the identical key. The P7 rejection was being computed correctly and then crashing on its own way into the audit log.
+
+This is **not** a commerce-specific bug — it lives in `episode-logger.ts`, shared by both agents, and would have crashed identically for a recovery strategy if anything had ever called `decide()` twice for the same `(orderId, attemptNumber)` after the first executed. Nothing in the existing 190-test suite ever exercised that path: `test/policy-rules.test.ts`'s P7 tests only call `evaluateProposal()` directly against a hand-built snapshot, never through the real logger. `test/commerce-buyer.test.ts`'s idempotency case is the first test anywhere in this build to do so.
+
+Fixed with `.onConflictDoNothing({ target: schema.intents.idempotencyKey })` on the intents insert — the episode row is still written unconditionally (a P7-rejected duplicate stays fully visible in the audit trail), only the colliding second intents row is skipped, since the original executed intent remains the canonical record for that key. **Verified**: all 190 pre-existing tests still pass after the fix (shared infra, checked for regressions the same way the P8/nullable-failure changes were), plus the new idempotency test now passes for real instead of being weakened to avoid the crash.
+
+### Verified
+
+`npx tsc --noEmit` clean. **196/198 tests passing** (190 recovery + 6 new commerce; 2 gated behind live-credential env vars, unchanged).
+
+---
+
 ## Open questions / blockers for the user
 
 - **`ANTHROPIC_API_KEY`** not set in `.env` — needed before block 6. Add whenever convenient; not on the critical path yet.

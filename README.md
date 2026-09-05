@@ -1,14 +1,22 @@
-# salvage
+# salvage — a policy engine for agentic money movement
 
-Razorpay AI Buildathon submission — AI Revenue Recovery track.
+Razorpay AI Buildathon submission — **AI Growth & Agentic Commerce** track.
 
 ## 1. The problem
 
-Involuntary churn — a subscription payment that fails silently — accounts for 20–40% of total SaaS churn, and the median company loses ~9% of MRR to it. Razorpay retries a subscription charge automatically and halts after four consecutive failures, but *when* and *how* to re-engage the customer once that happens is left to the merchant. `salvage` is a decision layer that sits on top of that gap: it classifies why a payment failed, decides whether and when to re-approach the customer, and enforces hard limits on that decision so an LLM is never the last word on whether money moves or a customer gets contacted.
+Agents are starting to move real money without a human confirming each step — Razorpay's own in-app agent pilots are live, and the broader protocol race (NPCI's UAP, ACP, AP2, x402) is racing to standardize agent-to-agent commerce this year. The open question isn't whether an agent can transact. It's **who bounds it when it does.**
+
+Razorpay's own Agent Studio launch demo answered that question badly: an abandoned-cart agent offered a customer a ₹500 discount, and when that didn't convert, **it doubled the discount** — live, on stage, drawing real price-discrimination criticism (MediaNama, March 2026). Nothing stopped it because nothing was built to. `salvage` is the answer this build would give instead: every money-moving action an agent proposes passes through a deterministic policy engine — 14 rules, zero LLM involvement — that alone decides whether it executes, is rewritten, or gets routed to a human. The LLM proposes. It never gets the last word.
+
+That engine is demonstrated on two different agents, because a rule you've only ever tested once isn't a policy, it's a coincidence: a **buyer agent** that spends a merchant's customer's money against a real catalog, and a **recovery agent** that decides when and how to re-approach a customer whose payment already failed — itself a live, measured instance of "an agent's spend needs bounding," since Razorpay already auto-retries a failed subscription charge and silently debits the customer up to three times before giving up. Involuntary churn from failed payments costs the median SaaS company ~9% of MRR; that's real money already moving without enough oversight, which is exactly the class of problem this track asks for.
 
 ## 2. What this is, honestly
 
-`salvage` is an LLM agent that proposes a recovery action, in front of a deterministic policy engine (14 rules, zero LLM involvement) that alone decides whether that action executes. Verified live against **Gemini** (`gemini-3.5-flash-lite`) and, once Gemini's free-tier daily quota ran out mid-build, against a **local Ollama model** (`qwen2.5:7b`) — both behind the same provider-agnostic interface, proving the "swap providers in one line" design claim for real, under real pressure, not just in theory. **The rules-engine baseline — no LLM at all — recovers most of the achievable value on its own.** The honest headline is below, in the first screen, not buried:
+**One policy engine. Two agents.** A buyer agent (`src/commerce/buyer-agent.ts`) that proposes purchases against a merchant's catalog, and a recovery agent that proposes payment retries — both gated by the identical `PolicyEngine.decide()` call, the same 14 rules, the same audit trail. Neither agent can move money or contact a customer on its own authority; each proposes, and the engine alone executes, rewrites, or escalates.
+
+**The buyer agent's mandate is enforced by the same rule that caps recovery's auto-execution ceiling (P9)** — not a new one written for the occasion. Exceed your budget and the engine doesn't error, it rewrites your proposal into a human escalation and logs why. That's §9 below, with real output pasted in, not a mockup.
+
+**The recovery agent is the more heavily measured of the two**, because it's old enough in this build to have a real benchmark behind it: an LLM proposes a recovery action, a deterministic policy engine decides whether it executes. Verified live against **Gemini** (`gemini-3.5-flash-lite`) and, once Gemini's free-tier daily quota ran out mid-build, against a **local Ollama model** (`qwen2.5:7b`) — both behind the same provider-agnostic interface, proving the "swap providers in one line" design claim for real, under real pressure, not just in theory. **The rules-engine baseline — no LLM at all — recovers most of the achievable value on its own.** That's the honest headline, below, in the first screen, not buried — it's evidence the engine is real and load-bearing, not a marketing table:
 
 <!-- BENCHMARK_TABLE -->
 
@@ -30,6 +38,8 @@ World.execute(intent) -> ExecResult        # real Razorpay API, or SimWorld for 
 
 The eval does not reimplement the pipeline for speed or convenience — it runs `assembleEpisodeContext` → `decide` → `executeApproved` through the identical functions production uses, against a `SimWorld` instead of `RazorpayWorld`. A bug in the real pipeline shows up in the eval; a bug found by the eval is a bug in production.
 
+**The buyer agent is a parallel gate, not a fork of this one.** `Strategy.propose()` requires a non-null `FailureEvent` — a purchase has no failure, and widening that type would have meant un-freezing every recovery strategy and the eval to accommodate one new caller. So `src/commerce/decide-purchase.ts` is a ~30-line sibling to `decide()` with the identical shape (PROPOSE → GATE → LOG) that calls the exact same `PolicyEngine.decide()` port every recovery strategy calls. The only accommodation the engine itself needed was making `PolicyContext.failure` nullable, guarded in two rules (P3, P11) that simply don't fire when it's null — verified by running all 190 pre-existing tests unchanged after the change. Two entry points, one gate.
+
 ## 4. The constraint I found
 
 Razorpay's Payments API cannot re-charge a failed one-time payment — there is no "retry this card" endpoint. What actually executes:
@@ -41,7 +51,7 @@ The sharper version: Razorpay already retries a subscription charge daily and ha
 
 A second, unplanned constraint surfaced while building the live path: there is no fully headless, API-only way to trigger a real test-mode payment failure on a fresh account. The S2S direct-card API (`/v1/payments/create/json`) is 404 on this account (a separate entitlement gap, same shape as Subscriptions below); UPI Collect — the mechanism the original build plan assumed — was deprecated by Razorpay in Feb 2026. Test mode is built around the hosted checkout page with documented test cards, not a scriptable failure trigger, so triggering a real failure needs a browser (see §6 below) — this is what test mode is designed around, not a shortfall in this build.
 
-## 5. Benchmark table [synthetic]
+## 5. Evidence: the same engine, measured [synthetic]
 
 Config B (three named, cited perturbations from config A: liquidity mass shifts to days 25–31, category mix shifts toward `AUTH_ABANDONED`, downtime pattern shifts uniform→bursty). **n=20 scenarios, 1 seed** — a reduced sample, not the full 120×3 headline run; see §2's caveat for why. Live model: local `qwen2.5:7b` via Ollama.
 
@@ -163,11 +173,42 @@ Evaluation order (first match wins, logged as one rule id): **P7 → P13 → P3 
 
 **Backfill script proves P10/P11 are not rhetorical.** `npm run backfill -- --simulate 30` demonstrates P10 catching a volume runaway; `--stale-days 240` demonstrates P11 catching backdated data; `KILL_SWITCH=true npm run backfill -- --simulate 30` demonstrates P13. See `src/backfill/ingest.ts` and `PROGRESS.md` block 10 for the three real bugs found building this (all timestamp-semantics bugs: processing-time vs. event-time, wall-clock vs. simulated-now, and a missing execution call — each hid the next until fixed in order).
 
-## 9. No price authority
+## 9. Bounded by construction
 
-The agent can see a template with a `discount_pct` variable (`retry_with_offer_v1`) — it is deliberately left in the catalogue, not hidden. `buildProposalFromToolCall` checks every customer-facing proposal against a *pattern* match (`isPriceBearingVar`, not a hardcoded template id) on both the template's declared variables and whatever the model actually supplied, catching a smuggled price-bearing variable on an otherwise-legitimate template too. A match produces **no `Proposal` at all** — refused with an explanation fed back to the model as a tool result. "Offers proposed" (the model reached for the trap) and "offers sent" (structurally always 0) are reported as separate columns in the benchmark table above specifically so this can't be hidden inside a single "success" number.
+Two agents, two different ways an LLM could try to move money outside its authority. Both are stopped structurally — never by an instruction the model could be prompted around.
 
-This is a **structural** refusal, not an instruction the model could be prompted around: the policy layer never sees a `Proposal` carrying pricing, because `tools.ts` never constructs one.
+### The buyer's mandate is enforced by recovery's own value ceiling — not a new rule
+
+The buyer agent's spending limit is **P9**, the same rule that caps recovery's auto-execution ceiling, applied by constructing the policy engine's config with `valueCeilingPaise = mandate.maxPerOrderPaise` before the buyer ever runs (`src/commerce/decide-purchase.ts`). No new safety logic was written for the commerce surface — the buyer is gated by code that already had 42 tests behind it before this feature existed.
+
+Real output, `npm run seed:buyer`, against a live Razorpay test-mode order and a live Gemini-backed buyer agent — the buyer wants the Enterprise plan (₹7,500), its mandate ceiling is ₹5,000:
+
+```
+BEAT 2 — mandate breach -> P9 -> ESCALATE (the money beat)
+  Buyer wants the Enterprise plan (₹7,500, mandate ceiling ₹5,000)
+    proposed:   ESCALATE
+    verdict:    MODIFY (P9: order amount 750000 paise >= ceiling 500000
+                paise — escalating instead of auto-executing)
+```
+
+The audit trail preserves what actually happened: the agent proposed a `PURCHASE`, and the engine's `MODIFY` verdict *rewrote* that proposal into the `ESCALATE` shown above, keeping the model's original reasoning ("The buyer requested an upgrade to the Enterprise plan...") attached to the rewritten proposal — so a reviewer sees both what the agent wanted and why the engine overruled it, not just the after-the-fact outcome. This is the graceful-failure beat the track's own bar asks for, and it's the direct answer to the Agent Studio criticism in §1: the agent that tried to spend past its authority didn't get a second chance to try harder. It got escalated, with a rule id, on the first attempt.
+
+A second, smaller safety net sits right next to it and is labelled honestly as a *different* thing: `execute-purchase.ts` performs the same live pre-execution recheck P8 does for recovery (is this already paid, right now?) plus one genuinely new check — is the item actually in stock? — and the second one is never called P8 in the code or here, because P8 is about payment status and this is a catalog fact. A purchase that clears the mandate but targets an out-of-stock item is approved by policy and stopped at execution, exactly as designed:
+
+```
+BEAT 3 — out of stock (NOT P8 — a catalog fact, not an order status)
+    proposed:   PURCHASE (ADDON-OOS x1)
+    verdict:    APPROVE (P0)
+    executed:   ok=false — pre-execution catalog check: "ADDON-OOS" is out of stock
+```
+
+### No price authority, on either side
+
+The recovery agent can see a message template with a `discount_pct` variable (`retry_with_offer_v1`) — it is deliberately left in the catalogue, not hidden. `buildProposalFromToolCall` checks every customer-facing proposal against a *pattern* match (`isPriceBearingVar`, not a hardcoded template id) on both the template's declared variables and whatever the model actually supplied, catching a smuggled price-bearing variable on an otherwise-legitimate template too. A match produces **no `Proposal` at all** — refused with an explanation fed back to the model as a tool result. "Offers proposed" (the model reached for the trap) and "offers sent" (structurally always 0) are reported as separate columns in the benchmark table above specifically so this can't be hidden inside a single "success" number.
+
+The buyer agent gets the identical discipline: `proposePurchase` (`src/commerce/buyer-tools.ts`) has no price/amount/discount field at all, reuses the same `isPriceBearingVar` pattern to refuse any smuggled price-bearing key on the raw tool input before Zod even runs, and the executor reads price from `catalog.json`, never from the model — the same P6/P14 discipline recovery already had, applied to a purchase instead of a retry.
+
+Neither refusal is an instruction the model could be prompted around: the policy layer never sees a `Proposal` carrying pricing, on either agent, because the tool layer never constructs one.
 
 ## 10. Where the agent loses to the rules engine, and my theory why
 
@@ -187,15 +228,18 @@ Test keys are free, no KYC. The LLM cache is committed — a reviewer reproduces
 ```bash
 npm install
 npm run db:push                          # SQLite schema, zero external services
-npm test                                 # 186 tests, no live credentials needed
+npm test                                 # 196 tests, no live credentials needed
 ```
 
 **To see it decide something**, seed the demo decision chains and open the page — the verdicts shown are produced by the real pipeline (real classifier, real policy engine), not fixture rows:
 
 ```bash
-npm run seed:demo                        # TERMINAL trap caught by P3, a normal recovery, and a P8 race
-npm run dev                              # then open http://localhost:3000
+npm run seed:demo                        # recovery: TERMINAL trap caught by P3, a normal recovery, and a P8 race
+npm run seed:buyer                       # commerce: a normal purchase, the P9 mandate-breach escalation, an out-of-stock catch
+npm run dev                              # then open http://localhost:3000 (and GET /api/catalog)
 ```
+
+`seed:buyer` makes real Razorpay test-mode API calls and, by default, a real LLM call (`LLM_PROVIDER` from `.env`) — it needs the same credentials as the live path below.
 
 [`DEMO.md`](DEMO.md) is the 5-minute runbook for these, including what to say and where the honest answer is "that didn't happen."
 
@@ -223,6 +267,8 @@ Package manager is **npm, not pnpm** — `corepack prepare pnpm` failed with `EP
 
 ## 12. What I'd do with two more weeks
 
+- **A real wire protocol.** This build proves the *gating* half of agentic commerce — every purchase passes a real policy engine — but speaks no standard transport. Implementing UAP, ACP, AP2, or x402 as the buyer agent's actual protocol (rather than a direct in-process call to `decidePurchase()`) is real, multi-day work; deliberately not attempted here, named rather than quietly skipped.
+- **A held-out eval for the buyer agent.** The commerce surface is demonstrated, not benchmarked (§2 scope) — there's no defensible ground truth for "would this purchase have happened" the way `wouldSucceed()` gives recovery one, so inventing a number would undercut the honest-metrics posture the recovery eval earns. A real merchant catalog with real conversion data would change that.
 - **Confirm Subscriptions/recurring-payments entitlement** and run the `TOKEN_RETRY` path live at least once — it's built and typed against the real SDK but genuinely unverified.
 - **Consume `payment.downtime.*` for real.** It's received and stored today but not wired into the TRANSIENT-timing decision (`UnknownDowntimeChecker` defaults pessimistic instead) — real per-rail downtime data would sharpen the +90m/+6h split materially.
 - **Source `ATTEMPT_COST_PAISE`/`CONTACT_GOODWILL_COST_PAISE`** — currently round-number placeholders (`src/economics/constants.ts`), unlike the taxonomy's cited figures. "Net ₹ recovered" is honest only as a relative comparison until these are backed by something real.

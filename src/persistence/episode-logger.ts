@@ -94,6 +94,23 @@ export function makeEpisodeLogger(
       })
       .run();
 
+    // onConflictDoNothing, targeted at the idempotencyKey column: a P7
+    // REJECT for a duplicate (orderId, attemptNumber) reaches here with
+    // entry.intentId === null (decide()/decidePurchase() never mint one for
+    // a REJECT), so `existingIntent` above is never found and this always
+    // falls into the INSERT branch — but the idempotencyKey it computes is,
+    // by definition, the SAME key an earlier EXECUTED intent already has.
+    // Without the conflict guard this throws a raw SqliteError instead of
+    // recording the rejection, turning a correctly-computed P7 verdict into
+    // a crash. The EPISODE row above is still inserted unconditionally, so
+    // the rejected duplicate is fully visible in the audit trail — only the
+    // second, colliding INTENTS row is the one that's skipped, since the
+    // original executed intent remains the canonical record for that key.
+    // Found via test/commerce-buyer.test.ts's idempotency case — the first
+    // test anywhere in this build to actually call decide-shaped logic
+    // twice for the same (orderId, attemptNumber) through the real logger;
+    // test/policy-rules.test.ts's P7 tests only exercise evaluateProposal()
+    // directly against a hand-built snapshot, never this write path.
     db.insert(schema.intents)
       .values({
         id: entry.intentId ?? randomUUID(),
@@ -106,6 +123,7 @@ export function makeEpisodeLogger(
         razorpayRefId: entry.execResult?.razorpayRefId ?? null,
         createdAt: rowTimestamp,
       })
+      .onConflictDoNothing({ target: schema.intents.idempotencyKey })
       .run();
   };
 }
