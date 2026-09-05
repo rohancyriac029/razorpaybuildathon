@@ -54,6 +54,16 @@ export interface EpisodeRunResult {
   llmFallbacks: number;
   /** Attempts where the agent actually ran — the denominator for the above. */
   agentAttempts: number;
+  /**
+   * Baseline anchoring (block 12): attempts where the agent's final proposal
+   * departed from the deterministic baseline's action type. Paired with
+   * agentAttempts this gives the deviation rate — the metric that says
+   * whether the LLM is contributing a decision at all, rather than paying
+   * tokens to restate the rules engine.
+   */
+  baselineDeviations: number;
+  /** Attempts where the agent kept the baseline's action but moved its timing. Separated from deviations because "same lever, different clock" is a materially different claim from "different lever" — and conflating them is what made the first anchored pilot's metric read 100% agreement while recovery collapsed. */
+  baselineRetimed: number;
 }
 
 /**
@@ -135,6 +145,8 @@ export async function runEpisode(
   let executedAttemptCount = 0;
   let llmFallbacks = 0;
   let agentAttempts = 0;
+  let baselineDeviations = 0;
+  let baselineRetimed = 0;
 
   for (let attemptNumber = 1; attemptNumber <= MAX_ATTEMPTS; attemptNumber++) {
     const failureId = `fail_${orderId}_${attemptNumber}`;
@@ -171,6 +183,8 @@ export async function runEpisode(
       llmInputTokens += strategy.lastUsage.inputTokens;
       llmOutputTokens += strategy.lastUsage.outputTokens;
       if (strategy.lastOfferAttempted) offersProposed++;
+      if (strategy.lastAnchorRelation === "deviated") baselineDeviations++;
+      if (strategy.lastAnchorRelation === "retimed") baselineRetimed++;
       agentAttempts++;
       // AgentStrategy swallows LLM errors and returns RulesStrategy's proposal
       // (spec §3.1.1). Correct in production; here it means this "agent"
@@ -254,6 +268,8 @@ export async function runEpisode(
     offersSent,
     llmFallbacks,
     agentAttempts,
+    baselineDeviations,
+    baselineRetimed,
     timeToRecoveryMs,
     llmCostPaise,
   };

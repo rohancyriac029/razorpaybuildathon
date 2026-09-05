@@ -14,6 +14,40 @@ export function isIstBlackoutHour(d: Date): boolean {
   return hour >= 22 || hour < 8;
 }
 
+/**
+ * The same instant, written as an IST wall-clock time with an explicit +05:30
+ * offset — `2026-08-30T08:00:00+05:30` rather than `2026-08-30T02:30:00.000Z`.
+ *
+ * Both name the same moment, but the propose tools ask the model for "ISO 8601
+ * with offset", and handing it a `Z` string to copy is a trap: in the first
+ * anchored pilot the model copied the digits out of the UTC string and re-tagged
+ * them `+05:30`, shifting every proposal 5.5h earlier and landing 98 of 113
+ * attempts inside the P4 blackout it was explicitly told to avoid. Anything
+ * shown to the model as a time it might copy must already be in the format it
+ * is being asked to produce.
+ */
+export function toIstOffsetString(d: Date): string {
+  const ist = new Date(d.getTime() + IST_OFFSET_MINUTES * 60 * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${ist.getUTCFullYear()}-${p(ist.getUTCMonth() + 1)}-${p(ist.getUTCDate())}` +
+    `T${p(ist.getUTCHours())}:${p(ist.getUTCMinutes())}:${p(ist.getUTCSeconds())}+05:30`
+  );
+}
+
+/**
+ * Snap a proposed send time out of the 22:00-08:00 IST blackout to the next
+ * 08:00 IST. A deterministic strategy that only ever adds a fixed offset to
+ * "now" (rules.ts's INSTRUMENT/TRANSIENT/FUNDS branches) has no other way to
+ * avoid P4 — without this, whether a proposal survives policy depends on
+ * what time of day the failure happened to occur, not on the strategy's own
+ * judgment. OracleStrategy already does this inline (policySafeTime); this
+ * is that same logic, shared.
+ */
+export function snapOutOfBlackout(target: Date): Date {
+  return isIstBlackoutHour(target) ? nextIstClockTime(target, 8, 0) : target;
+}
+
 /** Start of the current IST calendar day, as a UTC Date — for P10's daily contact cap. */
 export function istMidnightUtc(d: Date): Date {
   const istMs = d.getTime() + IST_OFFSET_MINUTES * 60 * 1000;

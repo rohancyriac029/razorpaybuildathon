@@ -13,6 +13,7 @@ import { AgentStrategy } from "../agent/agent-strategy.js";
 import { OracleStrategy } from "../strategies/oracle.js";
 import { ScenarioRegistry } from "./scenario-registry.js";
 import { runEpisode, type EpisodeRunResult } from "./run-episode.js";
+import { resetEvalPolicyState } from "./reset-state.js";
 import { EVAL_ANCHOR_TIME, SCENARIO_GENERATION_SEED, type GeneratorConfig } from "./generator-config.js";
 import type { LlmClient } from "../llm/client.js";
 import type { Scenario } from "./scenario.js";
@@ -53,6 +54,7 @@ export async function runFullEval(opts: OrchestratorOptions): Promise<EvalRunOut
     const deterministicStrategies = [new NoRetryStrategy(), new FixedIntervalStrategy(), new RulesStrategy()];
 
     for (const strategy of deterministicStrategies) {
+      resetEvalPolicyState(opts.db);
       for (const scenario of scenarios) {
         const result = await runEpisode(opts.db, scenario, strategy, opts.config, seed, runId, new ScenarioRegistry());
         push(result);
@@ -63,6 +65,7 @@ export async function runFullEval(opts: OrchestratorOptions): Promise<EvalRunOut
     // Oracle needs a registry shared with SimWorld per episode — see
     // run-episode.ts's doc on why this can't be a single shared instance
     // reused blindly (a fresh one per call is correct and cheap).
+    resetEvalPolicyState(opts.db);
     for (const scenario of scenarios) {
       const registry = new ScenarioRegistry();
       const oracle = new OracleStrategy(registry, opts.config);
@@ -72,6 +75,7 @@ export async function runFullEval(opts: OrchestratorOptions): Promise<EvalRunOut
     }
 
     if (opts.llmClient) {
+      resetEvalPolicyState(opts.db);
       for (const scenario of scenarios) {
         // One CachingLlmClient PER SCENARIO, not shared across the whole
         // seed: the cache key needs an episode-scoping component (llm/

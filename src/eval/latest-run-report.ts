@@ -51,12 +51,14 @@ export function latestRunReport(db: Db): LatestRunReport {
       llmCostPaise: row.llmCostPaiseUsd ?? 0,
       // Not persisted to eval_runs (adding columns would need a migration
       // this late), so the HTML scoreboard cannot show the LLM-fallback
-      // warning — same class of documented limitation as this file's
-      // post-hoc TERMINAL inference below. `npm run eval`'s own stdout,
-      // which computes these live, stays the authoritative view and is
-      // where the warning is printed.
+      // warning or the baseline-anchoring split — same class of documented
+      // limitation as this file's post-hoc TERMINAL inference below.
+      // `npm run eval`'s own stdout, which computes these live, stays the
+      // authoritative view and is where both are printed.
       llmFallbacks: 0,
       agentAttempts: 0,
+      baselineDeviations: 0,
+      baselineRetimed: 0,
     };
     const arr = resultsByStrategy.get(row.strategyName) ?? [];
     arr.push(result);

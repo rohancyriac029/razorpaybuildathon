@@ -30,6 +30,10 @@ export interface AggregatedMetrics {
    */
   llmFallbacks: number;
   agentAttempts: number;
+  /** Baseline anchoring: attempts where the agent departed from the deterministic baseline's action type. 0 for every non-agent strategy. */
+  baselineDeviations: number;
+  /** Attempts where the agent kept the baseline's action but changed its timing. */
+  baselineRetimed: number;
 }
 
 /**
@@ -100,6 +104,8 @@ export function aggregate(
     oracleHeadroomPct: null,
     llmFallbacks: results.reduce((sum, r) => sum + r.llmFallbacks, 0),
     agentAttempts: results.reduce((sum, r) => sum + r.agentAttempts, 0),
+    baselineDeviations: results.reduce((sum, r) => sum + r.baselineDeviations, 0),
+    baselineRetimed: results.reduce((sum, r) => sum + r.baselineRetimed, 0),
   };
 }
 

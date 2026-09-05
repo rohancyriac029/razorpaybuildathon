@@ -31,17 +31,19 @@ import * as schema from "../db/schema.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 
-/** Every table except `llm_cache`, in foreign-key-safe deletion order. */
-const TABLES_TO_CLEAR = [
+/** Eval state that policy queries and simulated execution mutate. */
+const POLICY_TABLES_TO_CLEAR = [
   "intents",
   "episodes",
-  "eval_runs",
   "failures",
   "orders",
   "subscriptions",
   "webhook_events",
   "customers",
 ] as const;
+
+/** Every table except `llm_cache`, in foreign-key-safe deletion order. */
+const TABLES_TO_CLEAR = [...POLICY_TABLES_TO_CLEAR, "eval_runs"] as const;
 
 export interface ResetStats {
   clearedRows: number;
@@ -73,4 +75,21 @@ export function resetEvalState(db: Db): ResetStats {
   }
 
   return { clearedRows, cachedResponsesKept: cachedBefore };
+}
+
+/**
+ * Isolates one strategy's policy state inside a single eval run while
+ * retaining persisted results and the LLM cache.
+ */
+export function resetEvalPolicyState(db: Db): void {
+  const sqlite = (db as unknown as { $client: { prepare: (sql: string) => { run: () => unknown }; pragma: (p: string) => void } }).$client;
+
+  sqlite.pragma("foreign_keys = OFF");
+  try {
+    for (const table of POLICY_TABLES_TO_CLEAR) {
+      sqlite.prepare(`DELETE FROM ${table}`).run();
+    }
+  } finally {
+    sqlite.pragma("foreign_keys = ON");
+  }
 }

@@ -19,7 +19,7 @@ import type { Strategy } from "../ports/strategy.js";
 import type { DowntimeChecker } from "../policy/downtime-checker.js";
 import { UnknownDowntimeChecker } from "../policy/downtime-checker.js";
 import { getTemplate } from "../messaging/templates.js";
-import { istDayOfMonth, istHourOfDay, nextIstClockTime } from "../util/ist.js";
+import { istDayOfMonth, istHourOfDay, nextIstClockTime, snapOutOfBlackout } from "../util/ist.js";
 import type { EpisodeContext, MarkTerminalProposal, NudgeProposal, PaymentLinkProposal, Proposal } from "../types.js";
 
 const AUTH_ABANDONED_TEMPLATE_ID = "auth_incomplete_v1";
@@ -71,7 +71,7 @@ export class RulesStrategy implements Strategy {
       type: "PAYMENT_LINK",
       ...baseFields(ctx),
       reasoning: "INSTRUMENT: this instrument will fail identically again — link lets the customer supply a new one.",
-      sendAt: new Date(ctx.now.getTime() + 2 * HOURS).toISOString(),
+      sendAt: snapOutOfBlackout(new Date(ctx.now.getTime() + 2 * HOURS)).toISOString(),
       channel: "whatsapp",
     };
   }
@@ -100,7 +100,7 @@ export class RulesStrategy implements Strategy {
       reasoning: cleared
         ? "TRANSIENT, rails reported clear: retry soon at +90m."
         : "TRANSIENT, downtime status unknown/active: fail-closed default, wait +6h rather than assume rails recovered.",
-      sendAt: new Date(ctx.now.getTime() + delayMs).toISOString(),
+      sendAt: snapOutOfBlackout(new Date(ctx.now.getTime() + delayMs)).toISOString(),
       channel: "whatsapp",
     };
   }
@@ -114,7 +114,7 @@ export class RulesStrategy implements Strategy {
       reasoning: isSalaryWindow
         ? "FUNDS, day-of-month <= 7 (salary-cycle window): shorter +24h wait."
         : "FUNDS, outside the salary-cycle window: default +48h wait for balance to recover.",
-      sendAt: new Date(ctx.now.getTime() + delayMs).toISOString(),
+      sendAt: snapOutOfBlackout(new Date(ctx.now.getTime() + delayMs)).toISOString(),
       channel: "whatsapp",
     };
   }

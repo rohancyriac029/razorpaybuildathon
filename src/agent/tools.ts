@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { LlmToolDef } from "../llm/client.js";
 import type { EpisodeContext, Channel, EscalateProposal, MarkTerminalProposal, NudgeProposal, PaymentLinkProposal, Proposal, TokenRetryProposal } from "../types.js";
 import { getTemplate, isPriceBearingVar } from "../messaging/templates.js";
+import { isIstBlackoutHour, istHourOfDay, toIstOffsetString } from "../util/ist.js";
 
 const CHANNEL_ENUM = z.enum(["link", "whatsapp", "sms", "email"]);
 const ISO_DATETIME = z.string().datetime({ offset: true });
@@ -22,7 +23,7 @@ const ISO_DATETIME = z.string().datetime({ offset: true });
 export const GET_FAILURE_CONTEXT_TOOL: LlmToolDef = {
   name: "getFailureContext",
   description:
-    "What failed, when, how, which attempt this is, what you decided last time on this order and what happened, and the recovery economics (attempts remaining, attempt cost, amount at stake). Call this first, always.",
+    "What failed, when, how, which attempt this is, what you decided last time on this order and what happened, the recovery economics (attempts remaining, attempt cost, amount at stake), and the deterministic baseline's recommendation for this exact failure. Call this first, always.",
   inputSchema: { type: "object", properties: {}, required: [] },
 };
 
@@ -33,7 +34,50 @@ export const GET_CUSTOMER_HISTORY_TOOL: LlmToolDef = {
   inputSchema: { type: "object", properties: {}, required: [] },
 };
 
-export function getFailureContextResult(ctx: EpisodeContext) {
+/**
+ * Baseline anchoring (block 12): the deterministic RulesStrategy's proposal
+ * for this exact context, handed to the model as part of its situational
+ * context rather than left sitting unused beside it.
+ *
+ * Why: the eval's category breakdown showed the agent proposing PAYMENT_LINK
+ * 68/84 times on AUTH_ABANDONED and NUDGE zero times, against a rules engine
+ * that always nudges there — and the simulator rates a link at half a nudge's
+ * effectiveness for that category. The correct category-to-lever mapping was
+ * already encoded, deterministically, in a component the agent never
+ * consulted. This closes that gap: the model must now beat the baseline or
+ * endorse it, and say which.
+ *
+ * Deliberately strips orderId/attemptNumber/proposedAt — the model does not
+ * fill those (the caller does, from ctx), so showing them invites confusion
+ * without adding a decision-relevant signal.
+ */
+export function baselineSummary(p: Proposal): Record<string, unknown> {
+  // Field names carry the selective-anchoring contract: the ACTION is the
+  // anchor (the model was wrong here 84/84 on AUTH_ABANDONED), the TIMING is
+  // only a fallback (the model was better than the baseline here — anchoring
+  // it too cost TRANSIENT 66.7% -> 50.0% in the second pilot).
+  const summary: Record<string, unknown> = {
+    recommendedAction: p.type,
+    actionRationale: p.reasoning,
+    timingIsYourDecision: true,
+  };
+  if ("sendAt" in p) {
+    // IST-offset format, NOT the underlying UTC `Z` string — see
+    // toIstOffsetString's doc. The model is asked to emit offset-form
+    // datetimes, and it copies whatever it is shown; showing it UTC cost 98
+    // of 113 attempts to P4 in the first anchored pilot.
+    summary.fallbackSendAt = toIstOffsetString(new Date(p.sendAt));
+    summary.fallbackSendAtIstHour = istHourOfDay(new Date(p.sendAt));
+  }
+  if ("channel" in p) summary.channel = p.channel;
+  if (p.type === "NUDGE") {
+    summary.templateId = p.templateId;
+    summary.vars = p.vars;
+  }
+  return summary;
+}
+
+export function getFailureContextResult(ctx: EpisodeContext, baseline?: Proposal) {
   const fc = ctx.failureContext;
   return {
     order: { amountPaise: fc.order.amount, currency: fc.order.currency, status: fc.order.status },
@@ -51,6 +95,7 @@ export function getFailureContextResult(ctx: EpisodeContext) {
       outcome: a.outcome,
     })),
     economics: fc.economics,
+    ...(baseline ? { baselineRecommendation: baselineSummary(baseline) } : {}),
   };
 }
 
@@ -207,6 +252,8 @@ export function buildProposalFromToolCall(
     case "proposePaymentLink": {
       const parsed = proposePaymentLinkInput.safeParse(rawInput);
       if (!parsed.success) return refused(parsed.error.message);
+      const blackout = blackoutRefusal(parsed.data.sendAt);
+      if (blackout) return refused(blackout);
       const proposal: PaymentLinkProposal = {
         type: "PAYMENT_LINK",
         ...base,
@@ -247,6 +294,9 @@ export function buildProposalFromToolCall(
         return refused(`Template "${template.id}" is not approved for channel "${parsed.data.channel}". Approved: ${template.channels.join(", ")}.`);
       }
 
+      const nudgeBlackout = blackoutRefusal(parsed.data.sendAt);
+      if (nudgeBlackout) return refused(nudgeBlackout);
+
       const proposal: NudgeProposal = {
         type: "NUDGE",
         ...base,
@@ -277,4 +327,33 @@ export function buildProposalFromToolCall(
 
 function refused(message: string): ProposeToolOutcome {
   return { proposal: null, offerAttempted: false, refusalMessage: message };
+}
+
+/**
+ * Pre-policy blackout check for customer-facing proposals, fed back into the
+ * agent loop as a refusal so the model can fix the time inside the same
+ * episode instead of spending one of three lifetime attempts discovering P4
+ * the hard way.
+ *
+ * This does NOT replace or weaken P4 — the policy engine still evaluates every
+ * proposal independently and remains the authority. This is an affordance, in
+ * the same shape as the Zod validation and the P14 template refusal above: it
+ * can only refuse, never approve, so nothing reaches execution that the policy
+ * engine would not have allowed on its own.
+ *
+ * Selective anchoring makes this necessary: the model now picks its own
+ * sendAt, so it needs to see a constraint violation rather than silently
+ * burn the attempt.
+ */
+function blackoutRefusal(sendAtIso: string): string | null {
+  const at = new Date(sendAtIso);
+  if (!isIstBlackoutHour(at)) return null;
+  return (
+    `That sendAt lands at ${istHourOfDay(at)}:xx IST, inside the 22:00-08:00 IST blackout — ` +
+    `the policy engine (P4) will reject it and the attempt will be wasted. ` +
+    `Propose a time between 08:00 and 21:59 IST instead. ` +
+    `Remember the offset form: "2026-09-02T20:00:00+05:30" is 20:00 IST (allowed), ` +
+    `"2026-09-02T02:30:00+05:30" is 02:30 IST (blocked). ` +
+    `If you have no timing signal of your own, use the baseline's fallbackSendAt, which is already outside the window.`
+  );
 }

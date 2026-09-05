@@ -109,7 +109,109 @@ describe("AgentStrategy: happy paths", () => {
     const agent = new AgentStrategy(llm, new RulesStrategy());
     await agent.propose(testCtx);
 
-    expect(capturedFailureContextResult).toEqual(getFailureContextResult(testCtx));
+    // The agent anchors on the deterministic baseline, so the tool result it
+    // actually sees carries baselineRecommendation — compare against the same
+    // shape the agent builds, baseline included.
+    const baseline = await new RulesStrategy().propose(testCtx);
+    expect(capturedFailureContextResult).toEqual(getFailureContextResult(testCtx, baseline));
+  });
+
+  it("hands the model the baseline's recommendation, and records endorse-vs-deviate", async () => {
+    const testCtx = ctx("AUTH_ABANDONED"); // baseline here is NUDGE, unconditionally
+    let seenBaseline: Record<string, unknown> | null = null;
+    const llm = new FakeLlmClient((turns) => {
+      const last = turns[turns.length - 1];
+      if (last?.role === "tool_result" && last.toolName === "getFailureContext") {
+        seenBaseline = JSON.parse(last.content).baselineRecommendation;
+      }
+      if (turns.length === 0) return toolCall("getFailureContext", {});
+      // Deviate: propose a link where the baseline said nudge.
+      return toolCall("proposePaymentLink", {
+        sendAt: "2026-09-03T10:00:00.000Z",
+        channel: "whatsapp",
+        reasoning: "deviating from baseline to test the deviation counter",
+      });
+    });
+    const agent = new AgentStrategy(llm, new RulesStrategy());
+    const proposal = await agent.propose(testCtx);
+
+    expect(seenBaseline).not.toBeNull();
+    expect(seenBaseline!.recommendedAction).toBe("NUDGE");
+    expect(seenBaseline!.templateId).toBe("auth_incomplete_v1");
+    expect(seenBaseline!.timingIsYourDecision).toBe(true);
+    expect(proposal.type).toBe("PAYMENT_LINK");
+    expect(agent.lastBaselineAction).toBe("NUDGE");
+    expect(agent.lastDeviatedFromBaseline).toBe(true);
+  });
+
+  it("records an endorsement when the model proposes the baseline's own action", async () => {
+    const testCtx = ctx("AUTH_ABANDONED");
+    // Derive the baseline's own sendAt rather than hardcoding one — a guessed
+    // timestamp is a "retimed", not an "endorsed", and the point of this test
+    // is the exact-match path.
+    const baseline = await new RulesStrategy().propose(testCtx);
+    const baselineSendAt = (baseline as { sendAt: string }).sendAt;
+    const llm = new FakeLlmClient((turns) => {
+      if (turns.length === 0) return toolCall("getFailureContext", {});
+      return toolCall("proposeNudge", {
+        templateId: "auth_incomplete_v1",
+        vars: { first_name: "there", link: "<link>" },
+        channel: "whatsapp",
+        sendAt: baselineSendAt,
+        reasoning: "endorsing baseline: dropped mid-flow, a nudge is the right lever",
+      });
+    });
+    const agent = new AgentStrategy(llm, new RulesStrategy());
+    const proposal = await agent.propose(testCtx);
+
+    expect(proposal.type).toBe("NUDGE");
+    expect(agent.lastDeviatedFromBaseline).toBe(false);
+    expect(agent.lastAnchorRelation).toBe("endorsed");
+  });
+
+  it("distinguishes 'retimed' from 'endorsed' — same lever, moved clock", async () => {
+    // The distinction a type-only comparison misses, and the reason the first
+    // anchored pilot reported 113/113 agreement while recovery collapsed.
+    const testCtx = ctx("AUTH_ABANDONED");
+    const llm = new FakeLlmClient((turns) => {
+      if (turns.length === 0) return toolCall("getFailureContext", {});
+      return toolCall("proposeNudge", {
+        templateId: "auth_incomplete_v1",
+        vars: { first_name: "there", link: "<link>" },
+        channel: "whatsapp",
+        sendAt: "2026-09-05T18:00:00+05:30", // same lever, deliberately different instant
+        reasoning: "agreeing on the nudge but moving it later",
+      });
+    });
+    const agent = new AgentStrategy(llm, new RulesStrategy());
+    const proposal = await agent.propose(testCtx);
+
+    expect(proposal.type).toBe("NUDGE");
+    expect(agent.lastAnchorRelation).toBe("retimed");
+    expect(agent.lastDeviatedFromBaseline).toBe(false); // not a lever change
+  });
+
+  it("treats an equivalent instant in another timezone form as an endorsement", async () => {
+    const testCtx = ctx("AUTH_ABANDONED");
+    const baseline = await new RulesStrategy().propose(testCtx);
+    const baselineSendAt = (baseline as { sendAt: string }).sendAt;
+    // Same moment, written with a +05:30 offset instead of a Z suffix.
+    const equivalent = new Date(baselineSendAt).toISOString().replace("Z", "+00:00");
+
+    const llm = new FakeLlmClient((turns) => {
+      if (turns.length === 0) return toolCall("getFailureContext", {});
+      return toolCall("proposeNudge", {
+        templateId: "auth_incomplete_v1",
+        vars: { first_name: "there", link: "<link>" },
+        channel: "whatsapp",
+        sendAt: equivalent,
+        reasoning: "endorsing baseline, different string form, same instant",
+      });
+    });
+    const agent = new AgentStrategy(llm, new RulesStrategy());
+    await agent.propose(testCtx);
+
+    expect(agent.lastAnchorRelation).toBe("endorsed");
   });
 });
 

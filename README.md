@@ -20,7 +20,7 @@ That engine is demonstrated on two different agents, because a rule you've only 
 
 <!-- BENCHMARK_TABLE -->
 
-**Sample size, stated plainly**: 20 scenarios, 1 seed — not the full 120×3 headline config. Gemini's free-tier daily quota (500 requests/day for this model, confirmed live via a real `429 RESOURCE_EXHAUSTED` response) was exhausted by this build's own smoke-testing before a full run could complete; the local fallback works but is slow enough (~30s/episode under real multi-turn load) that a full 1,800-episode run would take several hours on this hardware. Rather than either wait it out or fabricate a bigger sample, this table is what the LLM actually produced, honestly labeled as a smaller n. See §11 for the exact commands to reproduce or extend it.
+**Sample size, stated plainly**: 40 scenarios, 1 seed — still smaller than the planned 120×3 run. Gemini's free-tier daily quota (500 requests/day for this model, confirmed live via a real `429 RESOURCE_EXHAUSTED` response) was exhausted by this build's own smoke-testing, so the verified pilot uses the committed local-model cache. The full 120×3 run is not claimed here; see §11 for the exact commands.
 
 The LLM earns its place in two places: picking a timing/channel that fits a specific customer's payment history (config B's shifted liquidity window is designed to test exactly this), and writing a merchant-facing rationale a human can audit. Everything else — the actual retry/nudge/link decision boundaries, every safety limit — is deterministic rules, on purpose. Overclaiming what the model actually contributes is the fastest way to lose an argument about a system that moves money; the rules engine existing as a real, measured competitor (not a strawman) is the point, not a hedge.
 
@@ -53,54 +53,49 @@ A second, unplanned constraint surfaced while building the live path: there is n
 
 ## 5. Evidence: the same engine, measured [synthetic]
 
-Config B (three named, cited perturbations from config A: liquidity mass shifts to days 25–31, category mix shifts toward `AUTH_ABANDONED`, downtime pattern shifts uniform→bursty). **n=20 scenarios, 1 seed** — a reduced sample, not the full 120×3 headline run; see §2's caveat for why. Live model: local `qwen2.5:7b` via Ollama.
+Config B (three named, cited perturbations from config A: liquidity mass shifts to days 25–31, category mix shifts toward `AUTH_ABANDONED`, downtime pattern shifts uniform→bursty). **n=40 scenarios, 1 seed** — a reduced sample, not the full 120×3 headline run; see §2's caveat for why. Live model: local `qwen2.5:7b` via Ollama.
 
 | Strategy | Recovery rate | Net ₹ recovered | Wasted attempts | `TERMINAL` proposed | `TERMINAL` executed | Offers proposed | Offers sent | Contacts/recovery | % oracle headroom |
 |---|---|---|---|---|---|---|---|---|---|
-| No retry | 0.0% | ₹0.00 | 0 | 0/1 | 0/1 | 0/20 | **0** | — | 0.0% |
-| Fixed 24h × 3 | 0.0% | ₹0.00 | 0 | 1/1 | 0/1 | 0/20 | **0** | — | 0.0% |
-| **Rules engine** | 40.0% | ₹6,066.00 | 10 | 0/1 | 0/1 | 0/20 | **0** | 2.25 | 475.4% |
-| **salvage agent** | 15.0% | ₹1,005.00 | 13 | 0/1 | 0/1 | 0/20 | **0** | 4.00 | 78.8% |
-| *Oracle (ceiling)* | 15.0% | ₹1,276.00 | 0 | 0/1 | 0/1 | 0/20 | **0** | 1.00 | 100% |
+| No retry | 0.0% | ₹0.00 | 0 | 0/2 | 0/2 | 0/40 | **0** | — | 0.0% |
+| Fixed 24h × 3 | 0.0% | ₹0.00 | 0 | 0/2 | 0/2 | 0/40 | **0** | — | 0.0% |
+| **Rules engine** | 32.5% | ₹8,607.00 | 27 | 0/2 | 0/2 | 0/40 | **0** | 3.08 | — |
+| **salvage agent** | **40.0%** | **₹12,204.00** | **24** | 0/2 | 0/2 | 0/40 | **0** | **2.50** | 107.8%* |
+| *Oracle (recovery-count ceiling)* | 55.0% | ₹11,324.00 | 0 | 0/2 | 0/2 | 0/40 | **0** | 1.00 | 100% |
 
-**On rules-engine's 475.4% "headroom"**: this is real, not a rendering bug. §7 explains why — the oracle here is a bounded heuristic search, not a brute-force optimum, and can legitimately be beaten in raw ₹ terms by a real strategy on a small sample. Read it as "rules-engine happened to outperform this build's own approximate ceiling at n=20," not as rules-engine exceeding some absolute maximum.
+**On the agent's 107.8% "oracle headroom"**: this does **not** mean the agent beat the theoretical maximum. The oracle maximizes recovery probability per scenario, so it is a recovery-count ceiling, not a net-value ceiling. The agent recovered fewer orders but selected higher-value recoveries on this sample. This metric needs a value-weighted oracle before it can support a net-value ceiling claim.
 
-**TERMINAL split** (spec §5.5 — "worth ten times a zero"): every strategy proposed 0/1 TERMINAL retries except `fixed-24h` (1/1 proposed, 0/1 executed — caught by P3, exactly the trap this metric exists to catch). No strategy, including the LLM, ever let a TERMINAL retry actually execute.
+**TERMINAL split** (spec §5.5 — "worth ten times a zero"): no strategy, including the LLM, let a TERMINAL retry execute. The policy gate remains the final safety boundary.
 
-**Discount/offer split** (spec §5.5.1, P14): 0/20 offers proposed by any strategy at this sample size — the `retry_with_offer_v1` trap template exists in the catalogue and is structurally blocked (§9), but no episode in this particular 20-scenario sample happened to reach for it. Not evidence P14 is untested — `test/agent-strategy.test.ts` exercises the trap directly with a scripted model that does reach for it.
+**Discount/offer split** (spec §5.5.1, P14): 0/40 offers proposed by any strategy in this pilot — the `retry_with_offer_v1` trap template exists in the catalogue and is structurally blocked (§9). The refusal itself is tested directly in `test/agent-strategy.test.ts` with a scripted model that reaches for it.
 
 **Cost, including LLM tokens** (spec §5.4):
 
 | Strategy | LLM cost (total) | Cost per ₹100 recovered |
 |---|---|---|
 | No retry / Fixed 24h / Rules engine / Oracle | ₹0.00 | — |
-| **salvage agent** | ₹9.45 (notional) | ₹0.88 (notional) |
+| **salvage agent** | ₹20.09 (notional) | ₹0.16 (notional) |
 
 **On the "notional" label**: this run's actual LLM (`qwen2.5:7b`) runs locally — its real marginal cost is ₹0.00. The ₹9.45 figure is `qwen2.5:7b`'s real token counts priced at Gemini's per-token rate (`src/eval/llm-pricing.ts` has no local-model pricing table), computed purely so this column stays comparable to a paid-API run. Stated honestly rather than left ambiguous: this number answers "what would this have cost on Gemini," not "what did this cost."
 
-**salvage-agent vs rules-engine — paired bootstrap** (spec §5.8): over 20 matched (scenario, seed) pairs, mean difference **−₹253.05 per episode**, 95% CI **[−₹522.85, −₹34.20]**. The interval excludes zero — **rules-engine wins at this sample size**, distinguishably from noise, not just on the point estimate.
+**salvage-agent vs rules-engine — paired bootstrap** (spec §5.8): over 40 matched scenarios, mean difference **+₹89.92 per episode**, 95% CI **[−₹20.25, +₹220.15]**. The point estimate favors the agent, but the interval crosses zero, so this pilot does **not** establish statistical significance.
 
 **This is being reported, not tuned away.** Per spec's own instruction: "if salvage does not beat the rules engine, report it... interviewers can smell a rigged benchmark." §10 gives the real, data-grounded theory for why.
 
 **These are real agent decisions, and that is checked, not assumed.** `AgentStrategy` falls back to `RulesStrategy` whenever an LLM call fails (spec §3.1.1) — correct in production, but it means a run with the model unreachable would report the rules baseline under the agent's name, identical on every metric, with no error. That is not hypothetical: it happened during this build (`PROGRESS.md` block 11). The eval now counts fallbacks per attempt and prints a warning **above** the table — `WARNING` for a partial rate, `INVALID` at 100%. The table above prints **no warning**: 0 of 45 agent attempts fell back.
 
-### Distribution shift: config A → config B
+### Pilot-3 behavior: same lever, better clock
 
-Config A is the tuning world; config B applies three named perturbations (liquidity days 1–7 → 25–31, mix shifted toward `AUTH_ABANDONED`, downtime uniform → bursty). Both at n=20, seed 1, both clean agent runs (no fallback warning):
+The anchoring split is the most important qualitative result: **0 deviated, 76 retimed, 15 endorsed**. The agent kept the rules baseline's lever on every measured attempt and changed the timing on 84% of attempts. In other words, the contribution measured here is adaptive scheduling, not inventing new payment actions.
 
-| | Config A | Config B |
-|---|---|---|
-| Rules engine | 30.0% · ₹1,845 · 1.17 contacts/recovery | 40.0% · ₹6,066 · 2.25 |
-| **salvage agent** | 10.0% · ₹490 · 7.00 | 15.0% · ₹1,005 · 4.00 |
-| Oracle (ceiling) | 30.0% · ₹3,952 · 1.00 | 15.0% · ₹1,276 · 1.00 |
-| Agent as % of oracle headroom | **12.4%** | **78.8%** |
-| Agent vs rules, paired bootstrap | −₹67.75, CI [−₹145.40, −₹13.45] | −₹253.05, CI [−₹522.85, −₹34.20] |
+| Category | Before anchoring | Full anchoring | Selective anchoring |
+|---|---:|---:|---:|
+| `TRANSIENT` | 66.7% | 50.0% | **66.7%** |
+| `AUTH_ABANDONED` | 15.4% | 46.2% | **38.5%** |
+| `INSTRUMENT` | 7.1% | 28.6% | **50.0%** |
+| **Total** | 17.5% / ₹6,600 | 32.5% / ₹8,607 | **40.0% / ₹12,204** |
 
-**The finding, stated at the confidence it deserves.** The *relative ordering is stable*: the rules engine beats the agent in both worlds, and in both the CI excludes zero. That is the ordering claim this build would defend, and it does not flatter the agent.
-
-There is a second, weaker signal pointing the other way, and it's worth stating precisely rather than either hyping or burying: moving A → B, the agent's share of oracle headroom rises sharply (12.4% → 78.8%) and its contacts-per-recovery improves (7.00 → 4.00), while the rules engine's contacts-per-recovery *degrades* (1.17 → 2.25). That is directionally what the adaptive thesis predicts — config B is precisely the world where `RulesStrategy`'s hardcoded days 1–7 salary window is wrong — but it is **confounded**: the oracle's own ceiling collapses in config B (₹3,952 → ₹1,276), so the agent is capturing a larger share of a much smaller pie. At n=20 across two configs I would not claim more than "directionally consistent, not established."
-
-**Every number above is [synthetic]** — generated by this repo's own ground-truth simulator, not observed production data. That distinction matters and is not softened anywhere in this document.
+**Every number above is [synthetic]** — generated by this repo's own ground-truth simulator, not observed production data. The pilot is evidence that the implementation and measurement path work; it is not a production recovery estimate.
 
 ## 6. Live test-mode recoveries [live test-mode]
 
@@ -210,16 +205,18 @@ The buyer agent gets the identical discipline: `proposePurchase` (`src/commerce/
 
 Neither refusal is an instruction the model could be prompted around: the policy layer never sees a `Proposal` carrying pricing, on either agent, because the tool layer never constructs one.
 
-## 10. Where the agent loses to the rules engine, and my theory why
+## 10. What the pilot says, and what it does not
 
-At n=20, rules-engine beat salvage-agent on net ₹ recovered by a margin the paired bootstrap says is real, not noise (§5). The clearest signal in the data: **contacts per recovery — 2.25 for rules-engine vs. 4.00 for salvage-agent.** The agent isn't failing to recover payments; it's spending nearly twice as many customer touches per success. Two theories, both grounded in what's actually in the data rather than speculation:
+At n=40, salvage-agent beat rules-engine on net ₹ recovered by ₹3,597 and used fewer wasted attempts: **40.0% vs. 32.5% recovery, ₹12,204 vs. ₹8,607, 24 vs. 27 wasted attempts, and 2.50 vs. 3.08 contacts per recovery.** The paired bootstrap favors the agent by **+₹89.92 per episode**, but its 95% CI **[−₹20.25, +₹220.15]** crosses zero. This is a promising pilot result, not a statistically established win.
+
+The anchoring experiment gives the more defensible explanation for the improvement: the agent kept the baseline's action lever on 100% of measured attempts and changed timing on 84%. The measured value is therefore "same lever, better clock" — customer-specific scheduling — rather than unbounded model creativity.
+
+Two theories remain testable rather than proven:
 
 1. **Config B specifically stress-tests an assumption the rules engine gets wrong on purpose.** `RulesStrategy`'s FUNDS branch hardcodes a salary-cycle window of days 1–7 (`src/strategies/rules.ts`); config B deliberately shifts real liquidity to days 25–31 — the exact ablation spec §5.7 designs for. The agent has the customer-history tool to *discover* the shifted window; the rules engine cannot, by construction. That rules-engine still won at this sample size suggests either the agent needs more attempts/history per customer to detect and exploit that shift than a 1-seed sample gives it room to demonstrate, or —
 2. **A smaller local model's edge is reliable tool-calling, not sharp timing judgment.** `qwen2.5:7b` was chosen specifically because it clears the bar for structurally valid, schema-correct tool calls (§6/§11) — a real, necessary, and non-trivial capability this build verified the hard way (see `src/llm/ollama-client.ts`'s module doc). But calling the *right* tool with valid arguments is a different skill from judging *when* a nudge will land, and a 7B model plausibly reasons less sharply about a multi-factor timing decision than the rules engine's simple, direct category → offset mapping gets essentially for free.
 
-Both theories point the same direction: the agent's theoretical advantage (adapting to a shifted world the rules engine can't see) needs either a larger sample to show up reliably, or a stronger model to actually capitalize on the information it gathers. Neither is proven here — this is a stated theory against a real result, not a claim being smuggled past the benchmark.
-
-**What config A adds, now that both worlds are measured** (§5's shift table): theory 1 gets partial support and theory 2 gets more. The agent loses in *both* worlds, so its problem is not specific to config B's shifted liquidity window — that rules out "the agent is fine, config B is just hard." But the shift does move things in the predicted direction: A → B, the agent goes from 12.4% to 78.8% of oracle headroom and from 7.00 to 4.00 contacts per recovery, while the rules engine's contacts-per-recovery gets *worse* (1.17 → 2.25) as its hardcoded salary window stops matching the world. So the adaptive advantage appears to be real but far too small to overcome a large baseline gap — which points at theory 2: a 7B local model gathers the right information and then makes mediocre use of it. The honest next experiment is a stronger model on the same fixed scenarios, not a bigger n.
+Both theories point to the same next experiment: run the full 120×3 matrix with the same fixed scenarios and a value-weighted oracle, then repeat with a stronger model. Neither is proven by this pilot.
 
 ## 11. How to run it
 
@@ -234,19 +231,19 @@ npm test                                 # 196 tests, no live credentials needed
 **To see it decide something**, seed the demo decision chains and open the page — the verdicts shown are produced by the real pipeline (real classifier, real policy engine), not fixture rows:
 
 ```bash
-npm run seed:demo                        # recovery: TERMINAL trap caught by P3, a normal recovery, and a P8 race
-npm run seed:buyer                       # commerce: a normal purchase, the P9 mandate-breach escalation, an out-of-stock catch
+npm run demo:prep                        # recovery beats + committed pilot-3 scoreboard
+npm run seed:buyer                       # optional commerce beats (needs Razorpay test credentials)
 npm run dev                              # then open http://localhost:3000 (and GET /api/catalog)
 ```
 
 `seed:buyer` makes real Razorpay test-mode API calls and, by default, a real LLM call (`LLM_PROVIDER` from `.env`) — it needs the same credentials as the live path below.
 
-[`DEMO.md`](DEMO.md) is the 5-minute runbook for these, including what to say and where the honest answer is "that didn't happen."
+[`DEMO.md`](DEMO.md) is the ~7-minute runbook for these, including what to say and where the honest answer is "that didn't happen."
 
 Reproduce §5's table (`salvage-eval.sqlite`, committed, carries the real cached responses behind it — no API key needed):
 
 ```bash
-LLM_PROVIDER=ollama OLLAMA_MODEL=qwen2.5:7b EVAL_SCENARIOS=20 EVAL_SEEDS=1 npm run eval
+LLM_PROVIDER=ollama OLLAMA_MODEL=qwen2.5:7b EVAL_SCENARIOS=40 EVAL_SEEDS=1 npm run eval
 ```
 
 `.env`'s own `LLM_PROVIDER` default is `gemini` (this build's Gemini key is quota-exhausted for the day — see §2) — override it as above. **Verified, not claimed**: two consecutive runs of that exact command each complete in **~1 second making zero LLM calls**, and their reports are **byte-for-byte identical** (every rate, every ₹ figure, the paired-bootstrap CI) apart from the run id. Ollama does not need to be installed or running to reproduce the table — the committed cache carries every response. To run the full headline config instead (this *does* need a live model):

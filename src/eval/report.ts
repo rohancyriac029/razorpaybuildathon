@@ -99,6 +99,36 @@ export function renderPairedComparison(agentName: string, rulesName: string, res
   );
 }
 
+/**
+ * Baseline anchoring (block 12). The agent is handed the deterministic
+ * baseline's recommendation and must beat it or endorse it. This table is how
+ * you tell those apart at scale:
+ *
+ * - deviation rate 0% => the agent is a rules engine with a token bill.
+ * - deviation rate 100% => it is ignoring the anchor entirely, which is the
+ *   behaviour that lost AUTH_ABANDONED in the first place.
+ * - somewhere in between, with net ₹ at or above the rules baseline => the
+ *   LLM is actually choosing when to intervene, which is the whole claim.
+ *
+ * Returns "" when no agent episodes ran, so a deterministic-only run prints
+ * nothing extra.
+ */
+export function renderBaselineAnchoring(rows: StrategyReportRow[]): string {
+  const agentRows = rows.filter((r) => r.metrics.agentAttempts > 0);
+  if (agentRows.length === 0) return "";
+
+  const header =
+    "| Strategy | Agent attempts | Endorsed (same action + time) | Retimed (same action, new time) | Deviated (different action) | Deviation rate |\n" +
+    "|---|---:|---:|---:|---:|---:|";
+  const lines = agentRows.map((r) => {
+    const { strategyName, agentAttempts, baselineDeviations, baselineRetimed } = r.metrics;
+    const endorsed = agentAttempts - baselineDeviations - baselineRetimed;
+    const rate = agentAttempts > 0 ? (baselineDeviations / agentAttempts) * 100 : 0;
+    return `| ${strategyName} | ${agentAttempts} | ${endorsed} | ${baselineRetimed} | ${baselineDeviations} | ${rate.toFixed(1)}% |`;
+  });
+  return [header, ...lines].join("\n");
+}
+
 export function renderCostSummary(rows: StrategyReportRow[]): string {
   const header = "| Strategy | LLM cost (total) | Cost per ₹100 recovered |\n|---|---|---|";
   const lines = rows.map((r) => {

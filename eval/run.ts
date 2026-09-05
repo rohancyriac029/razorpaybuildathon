@@ -28,6 +28,7 @@ import {
   renderOfferSplit,
   renderPairedComparison,
   renderCostSummary,
+  renderBaselineAnchoring,
 } from "../src/eval/report.js";
 import { llmClientFromEnv } from "../src/llm/factory.js";
 import { resetEvalState } from "../src/eval/reset-state.js";
@@ -104,6 +105,12 @@ console.log(renderTerminalSplit(rows));
 
 console.log("\n## Discount/offer split (spec §5.5.1, P14)\n");
 console.log(renderOfferSplit(rows));
+
+const baselineAnchoring = renderBaselineAnchoring(rows);
+if (baselineAnchoring) {
+  console.log("\n## Baseline anchoring — did the LLM actually decide anything?\n");
+  console.log(baselineAnchoring);
+}
 
 console.log("\n## Cost, including LLM tokens (spec §5.4)\n");
 console.log(renderCostSummary(rows));

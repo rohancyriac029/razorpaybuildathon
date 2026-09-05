@@ -12,5 +12,28 @@ dist/
 *.sqlite-journal
 *.sqlite-shm
 *.sqlite-wal
-!salvage-eval.sqlite
 .DS_Store
+
+# Eval databases that ARE committed: they carry the benchmark results and the
+# LLM response cache, so `npm run demo:prep` and the eval table reproduce on a
+# fresh clone without an API key or a local model.
+!salvage-eval.sqlite
+!salvage-pilot3.sqlite
+
+# Working notes, run logs, and intermediate evidence from the build. Kept
+# locally, not part of the deliverable — README.md and DEMO.md carry the
+# findings that matter.
+SALVAGE-*.md
+TRACK-*.md
+DEMO-EVIDENCE-*
+PILOT*-OUTPUT.md
+*.log
+*.pgn
+salvage-eval.backup.sqlite
+salvage-eval.corrected-prefix.sqlite
+
+# Exploratory scripts used to derive the final pilot notes, not demo inputs.
+scripts/compare-anchoring.ts
+scripts/diagnose-pilot.ts
+scripts/stratify.ts
+scripts/why-auth-abandoned.ts

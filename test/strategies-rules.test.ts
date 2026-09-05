@@ -136,14 +136,16 @@ describe("RulesStrategy", () => {
       );
     });
 
-    it("boundary: day-of-month exactly 7 (IST) still gets the shorter +24h", async () => {
-      // 2026-09-07T18:00:00Z = 23:30 IST on 2026-09-07 -> IST day-of-month is still 7
+    it("boundary: day-of-month exactly 7 (IST) still gets the shorter +24h, snapped out of the P4 blackout", async () => {
+      // 2026-09-07T18:00:00Z = 23:30 IST on 2026-09-07 -> IST day-of-month is still 7.
+      // A raw +24h lands at 23:30 IST the next day, inside the 22:00-08:00 blackout
+      // P4 would reject — RulesStrategy snaps it to the next 08:00 IST instead of
+      // proposing a time policy is guaranteed to refuse (src/util/ist.ts's
+      // snapOutOfBlackout, applied in rules.ts).
       const now = new Date("2026-09-07T18:00:00Z");
       const strategy = new RulesStrategy();
       const proposal = await strategy.propose(ctx("FUNDS", now));
-      expect(proposal.type === "PAYMENT_LINK" && proposal.sendAt).toBe(
-        new Date(now.getTime() + 24 * 3_600_000).toISOString(),
-      );
+      expect(proposal.type === "PAYMENT_LINK" && proposal.sendAt).toBe("2026-09-09T02:30:00.000Z"); // 08:00 IST, Sep 9
     });
 
     it("boundary: day-of-month exactly 8 (IST) gets the longer +48h", async () => {

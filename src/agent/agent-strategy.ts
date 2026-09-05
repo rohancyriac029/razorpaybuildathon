@@ -25,6 +25,22 @@ import {
 const KICKOFF_MESSAGE =
   "A payment has failed. Investigate using your tools, then propose exactly one action. Call getFailureContext first, always.";
 
+/**
+ * How a proposal relates to the baseline it was anchored on. Compares the
+ * instant, not the string, so an equivalent time written in a different
+ * timezone form still counts as an endorsement.
+ */
+function classifyAgainstBaseline(
+  proposal: Proposal,
+  baseline: Proposal,
+): "endorsed" | "retimed" | "deviated" {
+  if (proposal.type !== baseline.type) return "deviated";
+  const pAt = "sendAt" in proposal ? new Date(proposal.sendAt).getTime() : null;
+  const bAt = "sendAt" in baseline ? new Date(baseline.sendAt).getTime() : null;
+  if (pAt === null || bAt === null) return "endorsed"; // MARK_TERMINAL / ESCALATE carry no timing
+  return pAt === bAt ? "endorsed" : "retimed";
+}
+
 export class AgentStrategy implements Strategy {
   readonly name = "salvage-agent";
 
@@ -33,6 +49,23 @@ export class AgentStrategy implements Strategy {
   lastFellBackToRules = false;
   lastFallbackReason: string | null = null;
   lastUsage = { inputTokens: 0, outputTokens: 0 };
+  /**
+   * Baseline anchoring: how the model's final proposal related to the
+   * deterministic baseline it was shown.
+   *
+   * Three-way, not boolean, because the first anchored pilot proved a boolean
+   * lies: it reported 113/113 "endorsed" while the agent recovered 5% against
+   * the baseline's 32.5% — the model was matching the ACTION TYPE and then
+   * mangling the timestamp, which a type-only comparison scores as agreement.
+   *
+   *   endorsed  — same action, same sendAt. Genuinely deferring to the baseline.
+   *   retimed   — same action, different sendAt. Agrees on lever, moved timing.
+   *   deviated  — different action entirely.
+   */
+  lastBaselineAction: string | null = null;
+  lastAnchorRelation: "endorsed" | "retimed" | "deviated" = "endorsed";
+  /** Kept as the type-level signal (relation === "deviated"). */
+  lastDeviatedFromBaseline = false;
 
   constructor(
     private readonly llm: LlmClient,
@@ -45,17 +78,27 @@ export class AgentStrategy implements Strategy {
     this.lastFellBackToRules = false;
     this.lastFallbackReason = null;
     this.lastUsage = { inputTokens: 0, outputTokens: 0 };
+    this.lastDeviatedFromBaseline = false;
+    this.lastAnchorRelation = "endorsed";
+
+    // Computed once per invocation, before the loop: deterministic, free, and
+    // needed both as the model's anchor and as the fallback if the loop fails.
+    const baseline = await this.fallback.propose(ctx);
+    this.lastBaselineAction = baseline.type;
 
     try {
-      return await this.runLoop(ctx);
+      const proposal = await this.runLoop(ctx, baseline);
+      this.lastAnchorRelation = classifyAgainstBaseline(proposal, baseline);
+      this.lastDeviatedFromBaseline = this.lastAnchorRelation === "deviated";
+      return proposal;
     } catch (err) {
       this.lastFellBackToRules = true;
       this.lastFallbackReason = err instanceof Error ? err.message : String(err);
-      return this.fallback.propose(ctx);
+      return baseline; // already the RulesStrategy proposal for this ctx
     }
   }
 
-  private async runLoop(ctx: EpisodeContext): Promise<Proposal> {
+  private async runLoop(ctx: EpisodeContext, baseline: Proposal): Promise<Proposal> {
     const turns: LlmTurn[] = [];
 
     for (let step = 0; step < this.maxSteps; step++) {
@@ -71,7 +114,9 @@ export class AgentStrategy implements Strategy {
 
       if (READ_TOOL_NAMES.has(toolCall.name)) {
         const result =
-          toolCall.name === "getFailureContext" ? getFailureContextResult(ctx) : getCustomerHistoryResult(ctx);
+          toolCall.name === "getFailureContext"
+            ? getFailureContextResult(ctx, baseline)
+            : getCustomerHistoryResult(ctx);
         turns.push({ role: "tool_result", toolCallId: toolCall.id, toolName: toolCall.name, content: JSON.stringify(result) });
         continue;
       }

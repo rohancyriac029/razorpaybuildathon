@@ -21,7 +21,7 @@ import type { EscalateProposal, EpisodeContext, MarkTerminalProposal, PaymentLin
 import type { ScenarioRegistry } from "../eval/scenario-registry.js";
 import type { GeneratorConfig } from "../eval/generator-config.js";
 import { wouldSucceed } from "../eval/ground-truth.js";
-import { nextIstClockTime } from "../util/ist.js";
+import { nextIstClockTime, snapOutOfBlackout } from "../util/ist.js";
 
 const CANDIDATE_OFFSET_HOURS = [2, 24, 48, 72];
 
@@ -97,7 +97,7 @@ export class OracleStrategy implements Strategy {
 
     for (const hoursOut of CANDIDATE_OFFSET_HOURS) {
       const target = new Date(ctx.now.getTime() + hoursOut * 3_600_000);
-      const sendAt = category === "FUNDS" ? nextIstClockTime(target, liquidityHourIst) : target;
+      const sendAt = category === "FUNDS" ? nextIstClockTime(target, liquidityHourIst) : snapOutOfBlackout(target);
       candidates.push({
         type: "PAYMENT_LINK",
         ...baseFields(ctx),

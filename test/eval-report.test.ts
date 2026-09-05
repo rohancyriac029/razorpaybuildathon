@@ -19,6 +19,8 @@ function metrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetrics 
     medianTimeToRecoveryMs: 3_600_000,
     llmFallbacks: 0,
     agentAttempts: 0,
+    baselineDeviations: 0,
+    baselineRetimed: 0,
     llmCostPaiseTotal: 0,
     costPaisePer100RupeesRecovered: 0,
     oracleHeadroomPct: null,
