@@ -51,6 +51,13 @@
 
   /* --- Decisions tab --- */
   #decisions-layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+  #demo-request { margin-bottom: 20px; padding: 16px; }
+  #demo-request form { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  #demo-request label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+  #demo-request select, #demo-request input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 7px 9px; }
+  #demo-request button { background: var(--accent); color: white; border: 0; border-radius: 5px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
+  #demo-request button:disabled { opacity: .6; cursor: wait; }
+  #demo-result { margin-top: 10px; color: var(--muted); font-size: 12px; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   #order-list { max-height: 80vh; overflow-y: auto; }
   .order-row {
@@ -108,6 +115,26 @@
 </header>
 
 <main id="tab-decisions" class="active">
+  <div id="demo-request" class="panel">
+    <strong>Run a recovery request</strong>
+    <div class="muted" style="margin:4px 0 12px">Submit a simulated payment failure through the live agent and policy backend. No Razorpay call or customer message is sent.</div>
+    <form id="demo-form">
+      <label>Failure reason
+        <select id="demo-reason">
+          <option value="card_declined">card_declined</option>
+          <option value="insufficient_fund">insufficient_fund</option>
+          <option value="authentication_failed">authentication_failed</option>
+          <option value="card_number_invalid">card_number_invalid</option>
+          <option value="debit_instrument_blocked">debit_instrument_blocked</option>
+        </select>
+      </label>
+      <label>Amount (INR)
+        <input id="demo-amount" type="number" min="1" step="1" value="499" />
+      </label>
+      <button id="demo-submit" type="submit">Analyze request</button>
+    </form>
+    <div id="demo-result"></div>
+  </div>
   <div id="decisions-layout">
     <div class="panel">
       <div id="order-list"><div class="empty" style="padding:20px;color:var(--muted)">Loading…</div></div>
@@ -128,6 +155,7 @@ const API = {
   orders: () => fetch("/api/orders").then(r => r.json()),
   order: (id) => fetch(`/api/orders/${encodeURIComponent(id)}`).then(r => r.json()),
   evalLatest: () => fetch("/api/eval/latest").then(r => r.json()),
+  demoRecovery: (body) => fetch("/api/demo/recovery", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error || "request failed"); return data; }),
 };
 
 function fmtRupees(paise) {
@@ -203,6 +231,27 @@ function renderStep(s) {
       <div class="row muted" style="font-size:11px">${new Date(s.createdAt).toISOString()} · context ${esc(s.contextHash.slice(0,12))}…</div>
     </div>`;
 }
+
+document.getElementById("demo-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = document.getElementById("demo-submit");
+  const result = document.getElementById("demo-result");
+  button.disabled = true;
+  result.textContent = "Agent is analyzing the request...";
+  try {
+    const data = await API.demoRecovery({
+      errorReason: document.getElementById("demo-reason").value,
+      amountPaise: Math.round(Number(document.getElementById("demo-amount").value) * 100),
+    });
+    result.textContent = "Decision recorded. Select the new order below to inspect the proposal, rule, and simulated execution.";
+    await loadOrders();
+    await selectOrder(data.orderId);
+  } catch (err) {
+    result.textContent = `Request failed: ${err.message}`;
+  } finally {
+    button.disabled = false;
+  }
+};
 
 // --- Eval tab -----------------------------------------------------------
 let evalLoaded = false;

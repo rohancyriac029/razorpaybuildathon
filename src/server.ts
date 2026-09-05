@@ -39,6 +39,7 @@ import { loadCatalog } from "./commerce/catalog.js";
 export function buildServer(
   db: BetterSQLite3Database<typeof schema> = defaultDb,
   onPaymentFailed: (db: BetterSQLite3Database<typeof schema>, orderId: string) => Promise<void> = async () => {},
+  onDemoRecovery: ((input: { errorReason: string; amountPaise: number }) => Promise<string>) | null = null,
 ) {
   const app = Fastify({ logger: process.env.VITEST !== "true" });
 
@@ -84,6 +85,22 @@ export function buildServer(
   // v3 agentic-commerce (spec: "Agent-readable catalog" — Track A example
   // direction). Read-only, no auth, same posture as the routes above.
   app.get("/api/catalog", async () => loadCatalog());
+
+  app.post<{ Body: { errorReason?: string; amountPaise?: number } }>("/api/demo/recovery", async (req, reply) => {
+    if (!onDemoRecovery) return reply.code(503).send({ error: "demo recovery is not configured" });
+    const errorReason = String(req.body?.errorReason ?? "card_declined").trim();
+    const amountPaise = Number(req.body?.amountPaise ?? 49900);
+    if (!errorReason || !Number.isInteger(amountPaise) || amountPaise <= 0) {
+      return reply.code(400).send({ error: "errorReason and a positive integer amountPaise are required" });
+    }
+    try {
+      const orderId = await onDemoRecovery({ errorReason, amountPaise });
+      return { orderId, chain: getDecisionChain(db, orderId) };
+    } catch (err) {
+      req.log.error({ err }, "demo recovery request failed");
+      return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
 
   app.post("/webhooks/razorpay", async (req, reply) => {
     const rawBody = (req as unknown as { rawBody: string }).rawBody ?? "";
@@ -187,6 +204,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]!).href) {
   const { RulesPolicyEngine } = await import("./policy/engine.js");
   const { policyConfigFromEnv } = await import("./policy/engine.js");
   const { makeEpisodeLogger } = await import("./persistence/episode-logger.js");
+  const { runDemoRecoveryRequest } = await import("./demo/recovery-request.js");
   const { runDecisionPipeline, registerExecutionDispatcher } = await import(
     "./orchestration/decision-pipeline.js"
   );
@@ -206,6 +224,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]!).href) {
 
   const app = buildServer(defaultDb, (db, orderId) =>
     runDecisionPipeline(db, orderId, strategy, policyEngine, scheduler, log),
+    (input) => runDemoRecoveryRequest(defaultDb, strategy, policyEngine, input),
   );
   const port = Number(process.env.PORT ?? 3000);
   app.listen({ port, host: "0.0.0.0" }).then(() => {
