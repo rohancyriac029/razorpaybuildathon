@@ -224,11 +224,11 @@
     <form id="demo-form">
       <label>Failure reason
         <select id="demo-reason">
-          <option value="card_declined">card_declined</option>
-          <option value="insufficient_fund">insufficient_fund</option>
-          <option value="authentication_failed">authentication_failed</option>
-          <option value="card_number_invalid">card_number_invalid</option>
-          <option value="debit_instrument_blocked">debit_instrument_blocked</option>
+          <option value="card_number_invalid">card_number_invalid → INSTRUMENT (payment link)</option>
+          <option value="card_declined">card_declined → TRANSIENT (payment link)</option>
+          <option value="insufficient_funds">insufficient_funds → FUNDS (timed link)</option>
+          <option value="authentication_failed">authentication_failed → AUTH_ABANDONED (nudge)</option>
+          <option value="debit_instrument_blocked">debit_instrument_blocked → TERMINAL (P3 blocks)</option>
         </select>
       </label>
       <label>Amount (INR)
@@ -358,12 +358,21 @@ const STAGE_HELP = {
   "Executed": "The real Razorpay call, or nothing at all if any earlier stage stopped it.",
 };
 
-function stage(n, name, state, value, sub) {
+function stage(n, name, state, value, sub, linkifyFrom) {
+  // A real Razorpay test-mode run puts a live short URL in the execution
+  // detail. Rendering it as an anchor turns "the agent created a payment link"
+  // from a claim into something a judge can click on stage.
+  const url = linkifyFrom && String(linkifyFrom).match(/https?:\/\/\S+/);
+  const subHtml = url
+    ? `<span class="s-sub"><a href="${esc(url[0])}" target="_blank" rel="noopener">${esc(url[0])}</a></span>`
+    : sub
+      ? `<span class="s-sub">${esc(sub)}</span>`
+      : "";
   return `<div class="stage ${state}" title="${esc(STAGE_HELP[name] || "")}">
     <span class="s-n">${n}</span>
     <span class="s-name">${esc(name)}</span>
     <span class="s-val">${esc(value)}</span>
-    ${sub ? `<span class="s-sub">${esc(sub)}</span>` : ""}
+    ${subHtml}
   </div>`;
 }
 
@@ -423,7 +432,7 @@ function renderStep(s) {
     : p8Skipped
       ? stage("7", "Executed", "warn", "skipped", "customer had already paid")
       : exec
-        ? stage("7", "Executed", exec.ok ? "ok" : "blocked", exec.ok ? "sent" : "failed", exec.detail || "")
+        ? stage("7", "Executed", exec.ok ? "ok" : "blocked", exec.ok ? "sent" : "failed", exec.detail || "", exec.detail)
         : stage("7", "Executed", "warn", "pending", "waiting for scheduled time"));
 
   const arrow = (dead) => `<div class="flow-arrow${dead ? " dead" : ""}">→</div>`;

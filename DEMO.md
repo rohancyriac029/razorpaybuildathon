@@ -1,174 +1,165 @@
-# Demo runbook — ~7:00
+# Demo runbook
 
-Spec §8's beat table (recovery) plus the v3 commerce beats (spec §9), with the exact commands, the exact things to say, and — deliberately — the places where the honest answer is "that didn't happen." Rehearse twice.
+A 5:00 script you can deliver as written, plus fallback material for extra time and hard questions.
 
-## Before you start (2 minutes, do it every time)
+## Before you start (every time)
 
 ```bash
-npm run db:push                     # fresh dev schema
-npm run demo:prep                   # §8 recovery beats (REAL pipeline) + benchmark scoreboard
-npx tsx scripts/seed-buyer-demo.ts  # §9 commerce beats through the REAL pipeline (real Razorpay + real LLM)
-npm run dev                         # server on :3000
+npm run db:push       # fresh dev schema (first run only)
+npm run demo:prep     # clears rehearsal rows, seeds beats, loads the scoreboard
+npm run dev           # http://localhost:3000
 ```
 
-Open **http://localhost:3000**. You should see three recovery orders plus three buyer orders on the **Decisions** tab, and five strategies on the **Eval scoreboard** tab. Verify all of that before you present — if a seed script prints "already seeded (deduped)", the database already has them and you're fine. If the scoreboard is empty, rerun `npm run demo:prep`.
+Confirm **7 orders** in the left list and **5 strategies** on the Eval scoreboard before you present. Every submission through the request form adds a row, so re-run `demo:prep` if the list has grown — a cluttered list costs you time on stage.
 
-> **Why `demo:prep` copies eval rows.** The eval writes to its own database while the server reads `DATABASE_URL`, and running the eval directly against the dev database would wipe the seeded decision beats (`resetEvalState()` clears `orders`/`episodes`). `demo:prep` seeds the beats and copies only `eval_runs`, so both are on screen at once.
+The buyer beats need Razorpay test credentials and an LLM provider; they're already seeded in the committed database, but to regenerate them: `npm run seed:buyer`.
 
-> **What both seed scripts are and aren't.** Neither inserts fabricated rows. `seed-demo.ts` feeds real `payment.failed` payloads through the real taxonomy classifier and the real `decide()`/`executeApproved()` pipeline; `seed-buyer-demo.ts` runs a real Gemini-backed `BuyerAgent` through real `createPurchaseOrder`/`decidePurchase`/`executePurchase` against the real Razorpay test API. The verdicts on screen were genuinely decided, not typed in. Say this if asked; it's the difference between a demo and a mockup.
-
-**If you have a tunnel + browser and want the fully live version** of the recovery beat instead of the seeded one, see README §6's recipe (cloudflared → dashboard webhook → test card). It needs a browser because Razorpay test mode has no headless failure trigger — that's README §4, and it's worth saying out loud rather than hiding.
+> **What the seeds are and aren't.** Nothing is a fabricated row. `seed-demo.ts` pushes real `payment.failed` payloads through the real taxonomy classifier and the real `decide()`/`executeApproved()` pipeline; `seed-buyer-demo.ts` runs a real LLM-backed buyer agent against the real Razorpay test API. Every verdict on screen was genuinely decided. Say this if challenged — it's the difference between a demo and a mockup.
 
 ---
 
-## 0:00–0:30 — The problem, one line
+# The 5-minute script
 
-> "Agents are starting to move real money without a human confirming each step. Razorpay's own Agent Studio demo showed why that's dangerous unsupervised: an abandoned-cart agent offered a ₹500 discount, then **doubled it** when that didn't convert — live, on stage. The question isn't whether an agent can transact. It's who bounds it."
+## 0:00–0:25 — The problem
 
-## 0:30–2:00 — The buyer agent, and the money beat
+> "Agents are starting to move real money without a human confirming each step. Razorpay's own Agent Studio demo showed the failure mode live on stage: an abandoned-cart agent offered a ₹500 discount, then **doubled it** when that didn't convert. The question isn't whether an agent can transact. It's who bounds it."
 
-Open the catalog first: `curl localhost:3000/api/catalog` — *"the merchant is agent-readable."*
+Gesture at the pipeline banner across the top.
 
-> "This is a buyer agent with a spending mandate — ₹5,000 per purchase. It doesn't enforce that itself. A deterministic policy engine does, after it proposes — the same 14-rule engine, no new logic written for this."
+> "Seven stages. Blue is the LLM — it proposes, and that's all it can do. Green is deterministic. Stage 4 is the only thing that can authorise an action reaching a customer or a card."
 
-Click the **Basic plan** order (the first buyer beat).
-
-> "It wanted the Basic plan, ₹499, well inside mandate. Policy approves — **P0** — and it executes: real Razorpay order, real payment link."
-
-Click the **Enterprise plan** order (the mandate-breach beat — **this is the money beat**).
-
-> "Now it wants Enterprise — ₹7,500. Watch the proposal type change: it proposed a **PURCHASE**, and the verdict is **MODIFY, P9** — the *exact same rule* that caps recovery's auto-execution ceiling. The engine didn't error. It **rewrote** the buyer's proposal into an escalation to a human, and kept the agent's own reasoning attached so you can see what it wanted and why it got overruled.
->
-> That's my answer to the Agent Studio criticism: the agent that tries to spend past its authority doesn't get a second attempt to try harder. It gets escalated, with a rule id, on the first try."
-
-Click the **out-of-stock** order, quickly.
-
-> "One more safety net, and I'm labelling it honestly: this is *not* P8. P8 checks whether a payment already went through. This checks a catalog fact — is the item even in stock. Policy approved it, execution caught it. Different rule, same discipline: check right before you spend, not just at proposal time."
-
-## 2:00–2:30 — A normal recovery
-
-Click **`order_demo_normal_recovery`**.
-
-> "TRANSIENT failure — gateway-side, the instrument is fine. The strategy proposes a payment link, the policy engine approves it, it executes. That's the happy path, and it's the least interesting minute of this demo."
-
-Point at `sendAt` being **later than** `proposedAt`.
-
-> "The decision happened now; the link goes out when the strategy chose. Execution is scheduled, not immediate — that split is load-bearing, because the whole eval measures timing quality."
-
-## 2:30–4:00 — The adversarial TERMINAL **(this is the recovery half's whole demo)**
+## 0:25–1:25 — Safety, shown not asserted
 
 Click **`order_demo_terminal_trap`**.
 
-> "This one is a blocked card — `debit_instrument_blocked`. It *reads* like an ordinary card problem you'd retry. The taxonomy classifies it TERMINAL: no retry ever recovers it, and contacting the customer is pure cost and annoyance."
+> "A blocked card — `debit_instrument_blocked`. It *reads* like an ordinary card problem you'd retry. The taxonomy classifies it TERMINAL: no retry will ever recover it, and contacting the customer is pure cost."
 
-Point at the proposal, then the verdict.
+Let the flow animate, then point at the dashed tail.
 
-> "The strategy proposed a payment link anyway. The policy engine rejected it — **P3**, right there in the audit log, with the reason. You can see both: what the strategy wanted, and the rule that stopped it.
+> "The strategy proposed a payment link anyway. **P3 rejected it.** Stages 5, 6 and 7 never happened — nothing scheduled, nothing sent, no customer contacted. You can see both halves: what the agent wanted, and the rule that stopped it.
 >
-> Everyone else today is going to show you an agent succeeding. This is mine failing, safely, with a receipt. That's the thing I'd want to see if I were hiring for payments."
+> Everyone else today will show you an agent succeeding. This is mine failing safely, with a receipt."
 
-**The point to land:** the LLM is untrusted by construction. The policy engine is a pure function, no model in it, and it is the only thing that decides whether anything reaches a customer.
+## 1:25–2:05 — The race no model could win
 
-## 4:00–5:00 — The benchmark, and how the agent earned its place
+Click **`order_demo_p8_race`**.
 
-Switch to the **Eval scoreboard** tab (populated by `npm run demo:prep`).
+> "Same start: transient failure, agent proposes a link, policy approves, it gets scheduled. Then — between the decision and the send time — the customer pays on their own."
 
-> "Five strategies on the same scenarios, same policy engine, same execution path. Only the decision-maker changes. The two that matter are the **rules engine** — 150 lines of `if`, no LLM — and the **oracle**, which reads ground truth and is the ceiling."
+Point at stage 6, amber.
 
-| Strategy | Recovery | Net recovered | Wasted | Contacts/recovery |
-|---|---:|---:|---:|---:|
-| no-retry | 0.0% | ₹0 | 0 | — |
-| fixed-24h | 0.0% | ₹0 | 0 | — |
-| rules-engine | 32.5% | ₹8,607 | 27 | 3.08 |
-| **salvage-agent** | **40.0%** | **₹12,204** | **24** | **2.50** |
-| oracle | 55.0% | ₹11,324 | 0 | 1.00 |
+> "The system rechecks live payment status immediately before executing, and skips. No duplicate charge, no pointless message. **No model could have reasoned about this** — at decision time it hadn't happened yet. Only a check at the boundary catches it."
 
-> "The agent beats the rules engine — 40% against 32.5%, ₹12,204 against ₹8,607 — with fewer wasted attempts and better contact efficiency."
+## 2:05–2:50 — The money beat
 
-**Then immediately give away how hard that was**, because it's the strongest thing in the demo:
+Click **`order_TYRGzWLRQuExxK`** (₹7,500, escalated).
 
-> "That took three attempts and the first two failed. Attempt one: the rules engine was wired in as a fallback and never fired, so on abandoned-auth failures the agent chose a payment link 68 times and a nudge **zero** times out of 84 — against a ground-truth model that rates a link at half a nudge's effectiveness there. It lost that category significantly.
+> "Different agent — a buyer agent with a ₹5,000 per-order spending mandate. It wants the ₹7,500 Enterprise plan."
+
+Point at the verdict: `MODIFY P9`.
+
+> "The engine didn't error and didn't obey. It **rewrote** the purchase into a human escalation, and kept the agent's own reasoning attached so a reviewer sees what it wanted and why it was overruled. That's **P9 — the same rule that caps auto-execution on the recovery side.** One engine, two unrelated agents, no new rules."
+
+Now read the agent's own reasoning off the screen — the strongest line in the demo:
+
+> "And read what the model said: *'…and falls within my spending mandate.'* It doesn't. ₹7,500 against a ₹5,000 limit — 50% over. **The model asserted it was compliant and was simply wrong**, and the deterministic engine caught it anyway. That is the entire argument for why the model doesn't get to enforce its own limits."
+
+## 2:50–4:20 — Does the AI actually earn its place?
+
+Switch to the **Eval scoreboard** tab.
+
+| Strategy | Recovery | Net recovered |
+|---|---:|---:|
+| Rules engine | 32.5% | ₹8,607 |
+| **Salvage agent** | **40.0%** | **₹12,204** |
+| Oracle (ceiling) | 55.0% | ₹11,324 |
+
+> "Five strategies, same scenarios, same policy engine, same execution path. Only the decision-maker changes. The agent beats a 150-line deterministic rules engine — 40% against 32.5% — with *fewer* wasted attempts and better contact efficiency."
+
+Then immediately give away how hard that was:
+
+> "That took three attempts, and the first two failed.
 >
-> Attempt two: I handed it the baseline's full recommendation. It copied it exactly, 99 times out of 99 — byte-identical to the rules engine, mean difference exactly ₹0.00. A rules engine with a token bill. I measure that directly; it's called deviation rate, and 0% means the LLM is contributing nothing.
+> **One:** the rules engine was wired in as a fallback and never fired. On abandoned-auth failures the agent chose a payment link 68 times and a nudge **zero** times out of 84 — against a ground-truth model that rates a link at half a nudge's effectiveness there. It lost that category significantly.
 >
-> Attempt three: split the anchor. The rules engine is right about **which lever** — nudge versus link — because that's fixed domain knowledge. It's wrong about **when**, because timing is customer-specific and only the model sees that history. Now the agent keeps the lever 100% of the time and re-times 84% of attempts. That split is what made it win."
-
-| Endorsed (same action + time) | Retimed (same action, new time) | Deviated (different action) |
-|---:|---:|---:|
-| 15 | 76 | 0 |
-
-**Three caveats, said before anyone asks:**
-
-> "**One:** n=40, one seed. The paired bootstrap is +₹89.92 per episode, 95% CI [−₹20.25, +₹220.15] — it crosses zero. The point estimate is strongly positive but I am **not** claiming significance. A 120×3 run would resolve it; it takes about 1¾ hours and I haven't run it.
+> **Two:** so I handed it the baseline's recommendation. It copied it exactly — 99 times out of 99. Byte-identical to the rules engine, mean difference exactly ₹0.00. A rules engine with a token bill. I measure that directly; it's called deviation rate, and 0% means the LLM is contributing nothing.
 >
-> **Two:** the scoreboard says the agent captured 107.8% of oracle headroom. That is **not** beating the theoretical maximum — it's a flaw in my metric. The oracle maximizes recovery probability per scenario, not portfolio value, so it's a recovery-count ceiling, not a net-value ceiling. The agent recovered fewer orders but higher-value ones.
+> **Three:** split the anchor. The rules engine is right about **which lever** — nudge versus link — because that's fixed domain knowledge. It's wrong about **when**, because timing is customer-specific and only the model sees that history. The agent now keeps the lever 100% of the time and re-times 84% of attempts. That's the split that made it win."
+
+**Say the caveat before anyone asks:**
+
+> "n=40, one seed. The paired bootstrap is +₹89.92 per episode, 95% CI [−₹20.25, +₹220.15] — it crosses zero. Strong point estimate, **not** a significant result. I'm not claiming otherwise."
+
+## 4:20–5:00 — Close
+
+> "One more thing, because it's why I trust these numbers. Before reporting them I attacked my own benchmark. Every scenario fires at 05:30 IST, and P4 blocks customer contact between 22:00 and 08:00 — so the industry-standard fixed-24-hour retry had **100% of its proposals rejected before it ever acted.** That 0% row isn't a baseline I beat; it's a strategy that never got to play. My own rules engine was blocked on 47% of cases and was being *rewarded* for it, because a rejected proposal costs nothing.
 >
-> **Three:** the oracle is my own generator played perfectly, so 'percent of oracle headroom' measures how well a strategy reverse-engineered *my* world model, not anything about production."
-
-## 5:00–5:45 — We red-teamed our own benchmark
-
-Second terminal — runs in ~2 seconds, no LLM, no database:
-
-```bash
-npm run demo:blackout
-```
-
-> "Before trusting our own numbers we attacked them. Every scenario in the benchmark fires at 05:30 IST, and P4 blocks customer contact between 22:00 and 08:00. So `fixed-24h` — the industry-standard cron — had **100% of its proposals rejected before it ever acted**. That 0.0% row isn't a baseline we beat; it's a strategy that never got to play. And the rules engine was blocked on 47% of cases, which meant it was being *rewarded* for being blocked, because a rejected proposal costs nothing in the net metric.
+> I fixed it, and fixing it made my own baseline **stronger** — 16.7% up to 19.2%. I made the competition harder before claiming to beat it.
 >
-> We fixed it, and fixing it made our own baseline **stronger** — 16.7% up to 19.2%. We made the competition harder to beat before we claimed to beat it."
+> The policy engine is the product. It's what lets you put any decision-maker behind it — rules today, this model now, a better one tomorrow — and know none of them can move money, offer a discount, or message a customer outside the rules. The agent is a benchmark entry I can audit down to the individual wrong decision, not an article of faith."
 
-## 5:45–6:15 — No price authority, on the recovery side too
+---
 
-> "Same discipline you already saw on the buyer agent, other side of the ledger. This one's message-template based — the agent can see a template with a discount variable, and the tool layer refuses it structurally before it ever becomes a proposal. No propose tool has an amount parameter, on either agent, so there is no `Proposal` that can carry a price."
+# If you get more time
 
-**Be honest about the number:**
+**A normal recovery** — `order_demo_normal_recovery`. TRANSIENT → link → approved → executed. The happy path, and the least interesting minute you have. Point at `sendAt` being later than `proposedAt`: deciding and acting are deliberately separate, because the whole eval measures timing quality.
 
-> "The offer-trap template is in the catalogue and the agent can see it. In this 40-scenario sample it never reached for one — so that column reads 0/40 proposed, not '6 attempts blocked.' The trap firing is proven in `test/agent-strategy.test.ts` with a model scripted to reach for it, not in this run's data."
+**Out of stock** — `order_TYRH7XACDAdrW5` (₹299). Policy **approved** it — P0, nothing objected, well inside mandate — and the executor stopped it anyway because the catalog says out of stock. Label it honestly: **this is not P8.** P8 checks payment status; this checks a catalog fact. Same discipline, different rule: verify at the moment of action, because the world changes between deciding and acting. Two independent gates had to agree before money moved.
 
-*(Optional, ten seconds — the kill switch, if you have time or get asked about blast radius:)*
+**No price authority** — the agent can see a template carrying a `discount_pct` variable, and the tool layer refuses it structurally before it can become a proposal. No propose tool has an amount parameter on either agent, so no `Proposal` can carry a price. Be honest about the number: in this sample the agent never reached for it, so the column reads 0 proposed — the trap firing is proven in `test/agent-strategy.test.ts` with a model scripted to reach for it, not in this run's data.
+
+**Live interaction** — the **Run a recovery request** form runs the real pipeline end to end. Pick `debit_instrument_blocked` + **Simulated**, submit, and the flow renders live. A good answer to "is this pre-baked?" Use Simulated unless you have network headroom; Razorpay test mode makes real API calls and is slower.
+
+**Kill switch / blast radius** (~10s):
 
 ```bash
 KILL_SWITCH=true npm run backfill -- --simulate 30    # 30/30 rejected via P13
 npm run backfill -- --simulate 30 --stale-days 240    # 30/30 rejected via P11
 ```
 
-## 6:15–7:00 — Two more weeks
+**The blackout probe**, if they want to see the self-red-team rather than hear it (~2s, no LLM, no database):
 
-README §12. Lead with the two genuinely unfinished things across both agents: a real wire protocol (UAP/ACP/AP2/x402) for the buyer's transport instead of an in-process call, and — on the recovery side — the `TOKEN_RETRY` path, written and typed against the real SDK but **never run against a live mandate token** (Subscriptions entitlement never arrived), plus the full 120×3 eval.
-
----
-
-## Three graceful failures, loaded and ready
-
-Spec §8 wants these available if asked. Ranked by how convincing they are:
-
-**1. The P8 race — the best one.** Click **`order_demo_p8_race`**.
-> "Approved, then the customer paid on their own between the decision and the send. The pre-execution recheck caught it and skipped — `ok=false`, 'order already paid'. No model could have reasoned about this; it hadn't happened yet at decision time. Only a recheck at the boundary catches it."
-
-**2. The P10 global cap.** `npm run backfill -- --simulate 30` — approves up to the hourly cap, rejects the rest via P10.
-> "Every one of those orders is on attempt 1, so per-order limits do nothing. Only a system-wide cap catches a runaway backfill. That's why P10 exists, and this script is why I can say that instead of just asserting it."
-
-**3. Malformed model output → validation → rules fallback.** *Say this one is fault-injected.*
-> "With tool use the model rarely emits malformed arguments naturally, so this is injected in tests rather than something I caught in the wild. Volunteering that is worth more than the beat is."
+```bash
+npm run demo:blackout
+```
 
 ---
 
-## Questions with sharp edges
+# Questions with sharp edges
 
 **"Did the LLM actually do anything?"**
-> Yes, and I can show you exactly how much. It keeps the deterministic baseline's *lever* on 100% of attempts and re-times 84% of them — that re-timing is worth +7.5 points of recovery and about ₹3,600 over the rules engine on this sample. The measurement is a first-class metric: endorsed / retimed / deviated. When I first anchored it, that table read 0% deviation and the agent was byte-identical to the rules engine — the metric is there precisely to catch an LLM that isn't earning its tokens. Every safety boundary is still deterministic.
+> Yes, and I can show you how much. It keeps the baseline's lever on 100% of attempts and re-times 84% of them — worth +7.5 points of recovery and about ₹3,600 over the rules engine on this sample. It's a first-class metric: endorsed / retimed / deviated. When I first anchored it, that table read 0% deviation and the agent was byte-identical to the rules engine. The metric exists to catch an LLM that isn't earning its tokens.
 
-**"Why not Anthropic / why a local model?"**
-> The provider is one env var behind an interface. Gemini is wired and verified live; the daily free-tier quota is 500 requests and I exhausted it mid-build, so the reported numbers come from a local `qwen2.5:7b`. `AnthropicClient` is written but has never run — no key — and I haven't claimed otherwise anywhere.
+**"Is 40% good?"**
+> The oracle — which cheats by reading ground truth — recovers 55%, so the agent is capturing roughly 73% of the achievable recovery rate on this set. Quote the recovery rates, not the "% oracle headroom" column: that column is computed on net value, and the oracle doesn't optimise for value (see the next question).
 
-**"Is the eval reproducible?"**
-> Yes, and it's tested: two consecutive runs are byte-for-byte identical, in ~1 second, with zero LLM calls. Getting there required fixing a real bug — P10's global cap counted the *previous* run's executions and starved every later run to 0.0%. `test/eval-reset-state.test.ts` reproduces the bug and proves the fix.
+**"Your agent beat the oracle on rupees — isn't that impossible?"**
+> Good catch, and no — it's a flaw in that metric, not a result. The oracle maximises recovery *probability per scenario*, not portfolio value, so it's a recovery-count ceiling, not a value ceiling. The agent recovered fewer orders but higher-value ones. A value-weighted oracle is the fix. I'm not claiming to have beaten a theoretical maximum.
+
+**"Is the benchmark realistic?"**
+> No. It's a synthetic simulator and every recovery figure is a simulator result, not a production forecast. Attempt and contact costs are round-number placeholders, so the rupee figures are only meaningful as *relative* comparisons between strategies. What's real is the Razorpay test-mode integration, the policy engine, and the execution path.
+
+**"What's actually live against Razorpay?"**
+> Order creation, order-status fetch, payment-link creation — real test-mode calls returning real short URLs. Webhook signature verification and dedupe are real. Message delivery is stubbed and logged, not sent. `TOKEN_RETRY` is typed against the SDK but never verified live — Subscriptions entitlement never arrived, and I don't claim it works.
+
+**"Which model, and why not a frontier one?"**
+> Qwen 2.5 7B locally via Ollama, zero marginal cost. A frontier model on the same harness is the obvious next experiment — and the deviation-rate metric is the instrument that would tell you whether it contributes judgment or just copies the baseline.
 
 **"What's the weakest part?"**
-> Sample size, and I'd say it before you find it. The headline agent result is n=40, one seed, one config — the paired CI crosses zero, so the win is a strong point estimate, not a significant result. The distribution-shift claim (config A → B) is the finding I'd defend in principle, but I only measured the agent on config B — so right now it's a design, not a result. Second weakest: attempt and contact costs are round-number placeholders, so every rupee figure is only meaningful as a *relative* comparison between strategies.
+> Sample size, and I'd say it before you find it: n=40, one seed, one config, CI crosses zero. Second weakest: the cost constants are made up, so treat every rupee figure as relative. Third: the scheduler is process-local and doesn't survive a restart — a durable queue is required before this is production.
 
 **"Isn't the buyer agent just recovery with different words?"**
-> No — it's a different agent with a different mandate, gated through a genuinely parallel entry point (`decidePurchase()`, not `decide()`), because `Strategy` requires a non-null failure and a purchase has none. What's shared is the *engine*, deliberately: the buyer's ceiling is recovery's own P9 rule, not a new one. I'd rather defend "the same 14-rule engine holds up under a second, unrelated caller" than pretend I wrote two engines.
+> No — different agent, different mandate, a genuinely separate entry point (`decidePurchase()`, not `decide()`), because a purchase has no failure to classify. What's shared is the *engine*, deliberately: the buyer's ceiling is recovery's own P9. I'd rather defend "the same engine holds up under a second, unrelated caller" than pretend I wrote two.
 
 **"Is the commerce surface benchmarked like recovery is?"**
-> No, and I'm not going to pretend it is. There's no defensible ground truth for "would this purchase have happened" the way the recovery eval has `wouldSucceed()` — inventing one would undercut the honest-metrics posture the recovery eval earns. It's demonstrated live, with real Razorpay calls and a real model, not benchmarked. Said plainly in README §12, not discovered by a judge.
+> No, and I won't pretend it is. There's no defensible ground truth for "would this purchase have happened" the way recovery has `wouldSucceed()`. Inventing one would undercut the honest-metrics posture the recovery eval earns. It's demonstrated live, not benchmarked.
+
+---
+
+# If something breaks
+
+- **Scoreboard empty** → `npm run demo:prep`
+- **Decisions list empty** → `npm run db:push && npm run demo:prep`
+- **Port busy** → `PORT=3001 npm run dev`
+- **No model needed** — the demo reads committed results; nothing calls Ollama during the presentation
+- **Worst case** — the numbers are in the README's Evaluation section. Present from those.

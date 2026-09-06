@@ -33,6 +33,35 @@ if (!existsSync(SOURCE)) {
   process.exit(1);
 }
 
+// Ad-hoc rows from the dashboard's "Run a recovery request" form pile up with
+// every rehearsal, and they all look alike (same amount, same shape). Left in
+// place they bury the seeded beats — the terminal trap and the P8 race — at the
+// bottom of a list the presenter has to scroll on stage. Cleared here so
+// demo:prep always yields the same short, legible list. Seeded beats and buyer
+// beats are matched by their own id prefixes and are never touched.
+console.log("[demo-prep] 0/2 clearing ad-hoc request rows from previous rehearsals...");
+{
+  const dev = new Database(TARGET);
+  dev.pragma("foreign_keys = OFF");
+  const ids = dev
+    .prepare("SELECT id FROM orders WHERE razorpay_order_id LIKE 'order_demo_request_%'")
+    .all() as { id: string }[];
+  if (ids.length > 0) {
+    const list = ids.map((r) => r.id);
+    const holes = list.map(() => "?").join(",");
+    const wipe = dev.transaction((orderIds: string[]) => {
+      dev.prepare(`DELETE FROM episodes WHERE order_id IN (${holes})`).run(...orderIds);
+      dev.prepare(`DELETE FROM intents WHERE order_id IN (${holes})`).run(...orderIds);
+      dev.prepare(`DELETE FROM failures WHERE order_id IN (${holes})`).run(...orderIds);
+      dev.prepare(`DELETE FROM orders WHERE id IN (${holes})`).run(...orderIds);
+    });
+    wipe(list);
+  }
+  dev.pragma("foreign_keys = ON");
+  dev.close();
+  console.log(`[demo-prep] cleared ${ids.length} ad-hoc request order(s)`);
+}
+
 console.log("[demo-prep] 1/2 seeding live decision beats (real pipeline)...");
 execFileSync("npx", ["tsx", "scripts/seed-demo.ts"], { stdio: "inherit", shell: process.platform === "win32" });
 
