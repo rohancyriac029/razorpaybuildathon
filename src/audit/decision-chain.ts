@@ -34,6 +34,15 @@ export interface DecisionChainStep {
   execResult: unknown;
   outcome: string | null;
   createdAt: string;
+  /**
+   * The classified failure this attempt was responding to, when one is on
+   * record. Carried so the audit UI can render the full pipeline — what
+   * arrived and how the taxonomy bucketed it — rather than starting the story
+   * at the proposal, which is halfway through. Null for attempts with no
+   * matching failure row (e.g. the buyer-agent's PURCHASE path, which has no
+   * failure by construction).
+   */
+  failure: { category: string; errorReason: string | null; occurredAt: string } | null;
 }
 
 export interface DecisionChain {
@@ -92,19 +101,33 @@ export function getDecisionChain(db: Db, orderId: string): DecisionChain | null 
     .orderBy(schema.episodes.attemptNumber)
     .all();
 
-  const steps: DecisionChainStep[] = episodeRows.map((ep) => ({
-    attemptNumber: ep.attemptNumber,
-    strategyName: ep.strategyName,
-    contextHash: ep.contextHash,
-    reasoning: ep.reasoning,
-    proposal: ep.proposal,
-    verdictKind: ep.verdictKind,
-    verdictRuleId: ep.verdictRuleId,
-    verdictReason: ep.verdictReason,
-    execResult: ep.execResult,
-    outcome: ep.outcome,
-    createdAt: ep.createdAt,
-  }));
+  // Indexed by attemptNumber: an attempt's proposal answers the failure that
+  // carries the same attempt number (both are written by the same pipeline
+  // pass), so this is a lookup rather than a join on time.
+  const failureRows = db
+    .select()
+    .from(schema.failures)
+    .where(eq(schema.failures.orderId, orderId))
+    .all();
+  const failureByAttempt = new Map(failureRows.map((f) => [f.attemptNumber, f]));
+
+  const steps: DecisionChainStep[] = episodeRows.map((ep) => {
+    const f = failureByAttempt.get(ep.attemptNumber);
+    return {
+      attemptNumber: ep.attemptNumber,
+      strategyName: ep.strategyName,
+      contextHash: ep.contextHash,
+      reasoning: ep.reasoning,
+      proposal: ep.proposal,
+      verdictKind: ep.verdictKind,
+      verdictRuleId: ep.verdictRuleId,
+      verdictReason: ep.verdictReason,
+      execResult: ep.execResult,
+      outcome: ep.outcome,
+      createdAt: ep.createdAt,
+      failure: f ? { category: f.category, errorReason: f.errorReason, occurredAt: f.occurredAt } : null,
+    };
+  });
 
   return {
     order: {

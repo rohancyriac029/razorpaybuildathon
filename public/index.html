@@ -46,11 +46,11 @@
     font-size: 13px;
   }
   nav button.active { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
-  main { display: none; padding: 24px; max-width: 1200px; margin: 0 auto; }
+  main { display: none; padding: 24px; max-width: 1500px; margin: 0 auto; }
   main.active { display: block; }
 
   /* --- Decisions tab --- */
-  #decisions-layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+  #decisions-layout { display: grid; grid-template-columns: 280px 1fr; gap: 20px; align-items: start; }
   #demo-request { margin-bottom: 20px; padding: 16px; }
   #demo-request form { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
   #demo-request label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
@@ -94,6 +94,85 @@
   .verdict.MODIFY { color: var(--amber); background: rgba(242,184,75,.12); }
   .rule-id { font-family: monospace; color: var(--muted); }
 
+  /* --- Pipeline overview banner --- */
+  #pipeline-banner { padding: 14px 16px; margin-bottom: 20px; }
+  #pipeline-banner .title { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 12px; }
+  .pipe { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .pipe-node {
+    flex: 1 1 120px; min-width: 110px; padding: 8px 10px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 11px; text-align: center;
+  }
+  .pipe-node .n { display: block; color: var(--accent); font-weight: 700; font-size: 10px; }
+  .pipe-node .l { display: block; margin-top: 2px; }
+  .pipe-node.det { border-color: rgba(62,207,142,.4); }
+  .pipe-node.llm { border-color: rgba(91,141,239,.5); }
+  .pipe-arrow { display: flex; align-items: center; color: var(--muted); padding: 0 6px; font-size: 14px; }
+  .pipe-legend { margin-top: 10px; font-size: 11px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: middle; margin-right: 5px; border: 1px solid; }
+  .swatch.llm { border-color: rgba(91,141,239,.8); background: rgba(91,141,239,.25); }
+  .swatch.det { border-color: rgba(62,207,142,.8); background: rgba(62,207,142,.25); }
+
+  /* --- Attempt flow --- */
+  .attempt { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
+  .attempt-head {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 10px 14px; background: var(--panel-2); border-bottom: 1px solid var(--border);
+    font-size: 13px; flex-wrap: wrap;
+  }
+  .attempt-head .n { font-weight: 700; }
+  .attempt-head .strategy { font-family: monospace; font-size: 11px; color: var(--muted); }
+  .attempt-head .halted { color: var(--red); font-size: 11px; font-weight: 600; }
+  .flow { display: flex; align-items: stretch; overflow-x: auto; padding: 14px; gap: 0; }
+  .stage {
+    flex: 1 0 150px; min-width: 150px;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px; background: var(--panel-2);
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .stage .s-n { font-size: 10px; color: var(--muted); font-weight: 700; letter-spacing: .04em; }
+  .stage .s-name { font-size: 12px; font-weight: 600; }
+  .stage .s-val { font-size: 12px; font-family: monospace; word-break: break-word; }
+  .stage .s-sub { font-size: 11px; color: var(--muted); word-break: break-word; }
+  .stage.ok { border-color: rgba(62,207,142,.45); }
+  .stage.ok .s-val { color: var(--green); }
+  .stage.blocked { border-color: rgba(242,109,109,.55); background: rgba(242,109,109,.06); }
+  .stage.blocked .s-val { color: var(--red); }
+  .stage.warn { border-color: rgba(242,184,75,.5); }
+  .stage.warn .s-val { color: var(--amber); }
+  .stage.skipped { opacity: .4; border-style: dashed; }
+  .stage.skipped .s-val { color: var(--muted); }
+  .flow-arrow { display: flex; align-items: center; color: var(--border); padding: 0 5px; font-size: 16px; flex: 0 0 auto; }
+  .flow-arrow.dead { color: rgba(242,109,109,.4); }
+
+  /* Staged reveal: the flow plays through its stages so a viewer sees the
+     request travelling the pipeline instead of a wall of boxes appearing at
+     once. This is a replay of a recorded decision, labelled as such. */
+  .flow .stage, .flow .flow-arrow { opacity: 0; animation: revealStage .32s ease-out forwards; }
+  @keyframes revealStage { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .flow .stage.skipped { animation-name: revealSkipped; }
+  @keyframes revealSkipped { from { opacity: 0; } to { opacity: .4; } }
+  @media (prefers-reduced-motion: reduce) {
+    .flow .stage, .flow .flow-arrow { animation: none; opacity: 1; }
+    .flow .stage.skipped { opacity: .4; }
+  }
+
+  /* Plain-English summary of what the flow just demonstrated. */
+  .takeaway {
+    margin: 0 14px 14px; padding: 11px 13px; border-radius: 6px; font-size: 13px;
+    display: flex; gap: 9px; align-items: flex-start;
+  }
+  .takeaway .icon { font-size: 15px; line-height: 1.2; }
+  .takeaway.blocked { background: rgba(242,109,109,.08); border: 1px solid rgba(242,109,109,.3); }
+  .takeaway.ok { background: rgba(62,207,142,.08); border: 1px solid rgba(62,207,142,.3); }
+  .takeaway.warn { background: rgba(242,184,75,.08); border: 1px solid rgba(242,184,75,.3); }
+  .attempt-reasoning {
+    margin: 0 14px 14px; padding: 11px 13px; background: var(--bg);
+    border-radius: 6px; border-left: 3px solid var(--accent); font-size: 13px;
+  }
+  .attempt-reasoning .who { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); font-weight: 700; margin-bottom: 5px; }
+  .attempt-foot { padding: 0 14px 12px; font-size: 11px; color: var(--muted); font-family: monospace; }
+
   /* --- Eval tab --- */
   #eval-meta { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 13px; }
@@ -115,6 +194,30 @@
 </header>
 
 <main id="tab-decisions" class="active">
+  <div id="pipeline-banner" class="panel">
+    <div class="title">How every decision flows — the LLM proposes, the policy engine decides</div>
+    <div class="pipe">
+      <div class="pipe-node det"><span class="n">1</span><span class="l">payment.failed</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node det"><span class="n">2</span><span class="l">taxonomy</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node llm"><span class="n">3</span><span class="l">agent proposes</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node det"><span class="n">4</span><span class="l">policy gate<br>P0–P14</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node det"><span class="n">5</span><span class="l">schedule</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node det"><span class="n">6</span><span class="l">P8 recheck</span></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node det"><span class="n">7</span><span class="l">execute</span></div>
+    </div>
+    <div class="pipe-legend">
+      <span><span class="swatch llm"></span>LLM — proposes only, never executes</span>
+      <span><span class="swatch det"></span>Deterministic — no model involved</span>
+      <span>Stage 4 is the only thing that can authorise an action.</span>
+    </div>
+  </div>
+
   <div id="demo-request" class="panel">
     <strong>Run a recovery request</strong>
     <div id="demo-description" class="muted" style="margin:4px 0 12px">Submit a payment failure through the live agent and policy backend. Simulated mode makes no Razorpay call or customer message.</div>
@@ -215,33 +318,186 @@ async function selectOrder(orderId) {
   const chain = await API.order(orderId);
   const el = document.getElementById("chain");
   if (!chain) { el.innerHTML = `<div class="empty">Not found.</div>`; return; }
+  flowIndex = 0; // restart the staged reveal for this order
+  const blocked = chain.steps.filter(s => s.verdictKind === "REJECT").length;
+  const executed = chain.steps.filter(s => s.execResult && s.execResult.ok).length;
   el.innerHTML = `
-    <div style="margin-bottom:16px;font-size:13px;color:var(--muted)">
-      ${esc(chain.order.razorpayOrderId)} · ${fmtRupees(chain.order.amount)} · ${chain.steps.length} attempt${chain.steps.length===1?"":"s"}
+    <div style="margin-bottom:16px;display:flex;gap:14px;align-items:baseline;flex-wrap:wrap">
+      <strong style="font-family:monospace;font-size:13px">${esc(chain.order.razorpayOrderId)}</strong>
+      <span style="font-size:13px">${fmtRupees(chain.order.amount)}</span>
+      <span class="badge ${esc(chain.order.status)}">${esc(chain.order.status)}</span>
+      <span class="muted" style="font-size:12px">
+        ${chain.steps.length} attempt${chain.steps.length === 1 ? "" : "s"}
+        · ${executed} executed
+        · ${blocked} blocked by policy
+      </span>
     </div>
     ${chain.steps.map(renderStep).join("")}
   `;
 }
 
+// Running position of a stage across the whole rendered chain, so the reveal
+// cascades continuously through every attempt rather than restarting per row.
+// Reset by selectOrder() before each render.
+let flowIndex = 0;
+
+const IST = { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" };
+function fmtIst(iso) {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleString("en-IN", IST) + " IST"; } catch { return String(iso); }
+}
+// What each pipeline stage is for — shown on hover so the flow is readable
+// without a narrator standing next to the screen.
+const STAGE_HELP = {
+  "Failure": "The payment.failed webhook, verified by HMAC signature and de-duplicated by event id.",
+  "Taxonomy": "Deterministic mapping from the gateway's error reason to a recovery class. TERMINAL means no retry can ever succeed.",
+  "Proposed": "The strategy's single proposed action. It has no amount parameter — a discount is not expressible here.",
+  "Policy gate": "P0–P14, deterministic, no LLM. The only stage that can authorise an action reaching a customer or a card.",
+  "Scheduled": "Execution waits for the proposal's own send time. Deciding and acting are deliberately separate steps.",
+  "P8 recheck": "Live payment status is re-read immediately before executing, in case the customer already paid.",
+  "Executed": "The real Razorpay call, or nothing at all if any earlier stage stopped it.",
+};
+
+function stage(n, name, state, value, sub) {
+  return `<div class="stage ${state}" title="${esc(STAGE_HELP[name] || "")}">
+    <span class="s-n">${n}</span>
+    <span class="s-name">${esc(name)}</span>
+    <span class="s-val">${esc(value)}</span>
+    ${sub ? `<span class="s-sub">${esc(sub)}</span>` : ""}
+  </div>`;
+}
+
+/**
+ * One attempt rendered as the pipeline it actually travelled. The point of the
+ * layout is what DIDN'T happen: when the policy engine rejects, every
+ * downstream stage renders dashed and dimmed, so "the agent wanted this and
+ * was stopped here" is visible without reading a word.
+ */
 function renderStep(s) {
-  const proposal = s.proposal || {};
+  const p = s.proposal || {};
   const exec = s.execResult;
+  const isTerminalFailure = s.failure && s.failure.category === "TERMINAL";
+  const approved = s.verdictKind === "APPROVE" || s.verdictKind === "MODIFY";
+  const executionBound = ["PAYMENT_LINK", "NUDGE", "TOKEN_RETRY", "PURCHASE"].includes(p.type);
+  const reachedExecution = approved && executionBound;
+  const p8Skipped = exec && exec.ok === false && String(exec.detail || "").startsWith("P8 recheck");
+
+  const nodes = [];
+
+  // 1 — what arrived
+  nodes.push(stage("1", "Failure", "ok",
+    s.failure ? (s.failure.errorReason || "—") : (p.type === "PURCHASE" ? "purchase request" : "—"),
+    s.failure ? fmtIst(s.failure.occurredAt) : "no failure on record"));
+
+  // 2 — how the taxonomy bucketed it
+  nodes.push(stage("2", "Taxonomy", isTerminalFailure ? "blocked" : "ok",
+    s.failure ? s.failure.category : "n/a",
+    isTerminalFailure ? "never recoverable" : (s.failure ? "recoverable class" : "")));
+
+  // 3 — what the strategy asked for
+  const timing = p.sendAt ? fmtIst(p.sendAt) : "immediate";
+  nodes.push(stage("3", "Proposed", "ok", p.type || "?",
+    [p.channel, p.templateId, p.sendAt ? `send ${timing}` : null].filter(Boolean).join(" · ")));
+
+  // 4 — the only stage with authority
+  const gateState = s.verdictKind === "APPROVE" ? "ok" : s.verdictKind === "MODIFY" ? "warn" : "blocked";
+  nodes.push(stage("4", "Policy gate", gateState, `${s.verdictKind} ${s.verdictRuleId}`, s.verdictReason));
+
+  // 5 — scheduled, or never reached
+  nodes.push(reachedExecution
+    ? stage("5", "Scheduled", "ok", timing, p.sendAt ? `decided ${fmtIst(s.createdAt)}` : "")
+    : stage("5", "Scheduled", "skipped", "not scheduled", approved ? "no execution needed" : `blocked at ${s.verdictRuleId}`));
+
+  // 6 — the live recheck; skipping here is a WIN, not a failure
+  nodes.push(!reachedExecution
+    ? stage("6", "P8 recheck", "skipped", "not reached", "")
+    : p8Skipped
+      ? stage("6", "P8 recheck", "warn", "already paid", "execution skipped — no duplicate charge")
+      : exec
+        ? stage("6", "P8 recheck", "ok", "not yet paid", "cleared to execute")
+        : stage("6", "P8 recheck", "warn", "pending", "fires at sendAt"));
+
+  // 7 — what actually happened
+  nodes.push(!reachedExecution
+    ? stage("7", "Executed", "skipped", "nothing sent", "no customer contacted, no money moved")
+    : p8Skipped
+      ? stage("7", "Executed", "warn", "skipped", "customer had already paid")
+      : exec
+        ? stage("7", "Executed", exec.ok ? "ok" : "blocked", exec.ok ? "sent" : "failed", exec.detail || "")
+        : stage("7", "Executed", "warn", "pending", "waiting for scheduled time"));
+
+  const arrow = (dead) => `<div class="flow-arrow${dead ? " dead" : ""}">→</div>`;
+  // Stagger each element so the flow plays left-to-right on render.
+  const stepDelay = 90;
+  const flow = nodes
+    .map((n, i) => (i === 0 ? n : arrow(i >= 4 && !reachedExecution) + n))
+    .join("")
+    .replace(/class="(stage|flow-arrow)([^"]*)"/g, (m, cls, rest) => {
+      const idx = flowIndex++;
+      return `class="${cls}${rest}" style="animation-delay:${idx * (stepDelay / 2)}ms"`;
+    });
+
   return `
-    <div class="step">
-      <div class="step-head">
-        <span class="attempt">Attempt ${s.attemptNumber} — ${esc(proposal.type || "?")}</span>
+    <div class="attempt">
+      <div class="attempt-head">
+        <span class="n">Attempt ${s.attemptNumber} — ${esc(p.type || "?")}</span>
+        ${!reachedExecution ? `<span class="halted">HALTED AT STAGE 4 — ${esc(s.verdictRuleId)}</span>` : ""}
         <span class="strategy">${esc(s.strategyName)}</span>
       </div>
-      <div class="reasoning">${esc(s.reasoning)}</div>
-      <div class="row">
-        <span class="verdict ${esc(s.verdictKind)}">${esc(s.verdictKind)}</span>
-        <span class="rule-id">${esc(s.verdictRuleId)}</span>
-        <span class="muted">${esc(s.verdictReason)}</span>
+      <div class="flow">${flow}</div>
+      ${renderTakeaway(s, { reachedExecution, p8Skipped, isTerminalFailure, exec, p })}
+      <div class="attempt-reasoning">
+        <div class="who">${esc(s.strategyName)} reasoning</div>
+        ${esc(s.reasoning)}
       </div>
-      ${exec ? `<div class="row"><span class="muted">executed:</span> ${exec.ok ? `<span style="color:var(--green)">ok</span>` : `<span style="color:var(--red)">failed</span>`} — ${esc(exec.detail)}</div>` : ""}
-      ${s.outcome ? `<div class="row"><span class="muted">outcome:</span> <span class="badge ${esc(s.outcome)}">${esc(s.outcome)}</span></div>` : ""}
-      <div class="row muted" style="font-size:11px">${new Date(s.createdAt).toISOString()} · context ${esc(s.contextHash.slice(0,12))}…</div>
+      <div class="attempt-foot">
+        ${esc(new Date(s.createdAt).toISOString())} · context ${esc(String(s.contextHash).slice(0, 12))}…
+        ${s.outcome ? ` · outcome: ${esc(s.outcome)}` : ""}
+      </div>
     </div>`;
+}
+
+/**
+ * What this particular flow proves, in one sentence. The audit trail is
+ * legible to someone who already knows the system; this line is for the
+ * person seeing it for the first time.
+ */
+function renderTakeaway(s, ctx) {
+  const { reachedExecution, p8Skipped, isTerminalFailure, exec, p } = ctx;
+  let cls, icon, text;
+
+  if (isTerminalFailure && !reachedExecution) {
+    cls = "blocked"; icon = "🛑";
+    text = `The strategy proposed a ${p.type || "recovery action"} on a failure the taxonomy classified TERMINAL. `
+      + `Rule ${s.verdictRuleId} rejected it before anything left the system — no customer was contacted and no money moved. `
+      + `This is the agent failing safely, with a receipt.`;
+  } else if (!reachedExecution && s.verdictKind === "REJECT") {
+    cls = "blocked"; icon = "🛑";
+    text = `The strategy wanted to act. Rule ${s.verdictRuleId} said no — ${s.verdictReason} `
+      + `The proposal is logged in full, but nothing reached the customer.`;
+  } else if (s.verdictKind === "MODIFY") {
+    cls = "warn"; icon = "✋";
+    text = `The policy engine did not error and did not obey — it rewrote the proposal under rule ${s.verdictRuleId} `
+      + `(${s.verdictReason}) and routed it to a human, keeping the agent's own reasoning attached.`;
+  } else if (p8Skipped) {
+    cls = "warn"; icon = "⏱️";
+    text = `Approved and scheduled — then the customer paid on their own before the send time. `
+      + `The pre-execution recheck caught it and skipped, avoiding a duplicate charge and a pointless message. `
+      + `No model could have reasoned about this: at decision time it hadn't happened yet.`;
+  } else if (exec && exec.ok) {
+    cls = "ok"; icon = "✅";
+    text = `Classified, proposed, approved under ${s.verdictRuleId}, scheduled for its chosen send time, `
+      + `rechecked against live payment status, and executed. The happy path — every stage recorded.`;
+  } else if (!exec && reachedExecution) {
+    cls = "warn"; icon = "⏳";
+    text = `Approved under ${s.verdictRuleId} and scheduled. Execution fires at the proposal's send time, `
+      + `not at decision time — timing is part of the decision, so the two are deliberately separate.`;
+  } else {
+    cls = "warn"; icon = "⚠️";
+    text = `Approved under ${s.verdictRuleId}, but execution did not succeed: ${exec ? exec.detail : "no result recorded"}.`;
+  }
+
+  return `<div class="takeaway ${cls}"><span class="icon">${icon}</span><span>${esc(text)}</span></div>`;
 }
 
 document.getElementById("demo-form").onsubmit = async (event) => {
